@@ -10,7 +10,7 @@
 
 **官网 / 安装向导：** <https://thingsos.scholarcn.com>
 
-![ThingsOS 阅读界面：顶部时间与电量，下方为正文和阅读进度](https://thingsos.scholarcn.com/images/reading.webp)
+![ThingsOS 阅读界面：顶部时间与电量，下方为正文和阅读进度](docs/images/reading.webp)
 
 ## 这是什么
 
@@ -49,19 +49,19 @@ EPUB 与 TXT 放进同一个书库，列表与封面视图随心切换。继续�
 
 | 随身书库 | 自在排版 |
 | --- | --- |
-| ![书库界面，展示继续阅读与本地书籍列表](https://thingsos.scholarcn.com/images/library.webp) | ![阅读页底部展开字号、行距、边距和字体等设置](https://thingsos.scholarcn.com/images/reading-menu.webp) |
+| ![书库界面，展示继续阅读与本地书籍列表](docs/images/library.webp) | ![阅读页底部展开字号、行距、边距和字体等设置](docs/images/reading-menu.webp) |
 | 打开，就从上次那一页继续。 | 喜欢的字体，舒服的阅读节奏。 |
 
 | 阅读足迹 | 你的锁屏 |
 | --- | --- |
-| ![阅读统计界面，包含三个月热力图和每周时长柱状图](https://thingsos.scholarcn.com/images/statistics.webp) | ![书籍封面在 ThingsOS 锁屏上的灰阶显示](https://thingsos.scholarcn.com/images/lock-book-cover.webp) |
+| ![阅读统计界面，包含三个月热力图和每周时长柱状图](docs/images/statistics.webp) | ![书籍封面在 ThingsOS 锁屏上的灰阶显示](docs/images/lock-book-cover.webp) |
 | 读过的时光，也值得被记住。 | 让喜欢的封面，陪你待机。 |
 
 微信读书书架与离线缓存：
 
 | 个人书架 | 已缓存，可离线阅读 |
 | --- | --- |
-| ![微信读书个人书架界面，展示同步、WiFi、账号与书籍列表](https://thingsos.scholarcn.com/images/weread-shelf.webp) | ![微信读书书籍详情页显示已缓存可离线阅读](https://thingsos.scholarcn.com/images/weread-offline.webp) |
+| ![微信读书个人书架界面，展示同步、WiFi、账号与书籍列表](docs/images/weread-shelf.webp) | ![微信读书书籍详情页显示已缓存可离线阅读](docs/images/weread-offline.webp) |
 
 *固件界面渲染预览，书籍与统计为示例数据。封面来自 [Project Gutenberg](https://www.gutenberg.org/ebooks/11)。*
 
@@ -92,14 +92,9 @@ EPUB 与 TXT 放进同一个书库，列表与封面视图随心切换。继续�
 
 固件包、SHA256 校验值与分区信息见 [`release.json`](https://thingsos.scholarcn.com/release.json)。
 
-## 状态与已知限制
+## 版本说明
 
-当前 0.3.2 为**实验性构建**（`status: experimental-not-hardware-qualified`），以下限制来自官方 `release.json`：
-
-- 完整设备功能验收尚未完成（基础启动证据另行记录）。
-- 单主分区，物理掉电恢复未经验证。
-- EPUB 排版使用有界的内置标题 / 段落 / 图片布局，**不支持任意 CSS**。
-- EPUB 导航与渲染的逻辑章节上限为 **512** 条。
+ThingsOS 仍在持续迭代中。固件状态、分区布局与 SHA256 校验值以官方 [`release.json`](https://thingsos.scholarcn.com/release.json) 为准；EPUB 排版采用内置的有界布局（标题 / 段落 / 图片），章节索引上限 512 条。
 
 ## 常见问题
 
@@ -120,7 +115,7 @@ EPUB 与 TXT 放进同一个书库，列表与封面视图随心切换。继续�
 
 ## 许可
 
-- **ThingsOS 独立原生应用：Apache-2.0。**
+- **ThingsOS 独立原生应用：Apache-2.0**，许可证全文见 [`LICENSE`](LICENSE)。
 - 第三方组件与字体许可（FreeType 2.14.3、zlib 1.3.1、stb_image、cJSON、TinyUSB、pypinyin 词典、ThingsOS Keyboard Sans / SIL OFL 1.1、esp-web-tools、esptool-js 等）详见 [`THIRD_PARTY_NOTICES.txt`](https://thingsos.scholarcn.com/THIRD_PARTY_NOTICES.txt)。
 - 默认字体由用户提供，**代码许可不授予字体分发权**。
 - 设备端参考的 Read Pico 官方 BSP 组件版权归 mindreset（Apache-2.0），其中 epdiy fork 遵循 LGPL-3.0-or-later。
