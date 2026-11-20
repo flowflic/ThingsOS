@@ -1,0 +1,67 @@
+# ThingsOS on Metalio E-Ink4-Plus — repository exclusions.
+# Build outputs, vendor reference trees and per-machine state stay local.
+
+# Private reference checkouts and vendor snapshots (read-only inputs, not shipped)
+references/
+Metalio-E-INK4-Plus-source-2.0.76-debug-20261007/
+
+# Build artifacts and local verification evidence
+build/
+**/build/
+*.o
+*.a
+!native/vendor/esp-sr/lib/esp32s31/libnsnet3.a
+*.out
+*.elf
+*.map
+*.bin
+!native/firmware/main/assets/*.bin
+managed_components/
+sdkconfig.old
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+flasher_args.json
+# Host UI annotation fixtures generated at the repository root.
+/annotation-auto-test/
+/annotation-ui-test/
+
+# Per-machine tool state
+.ccgui/
+.claude/
+.vscode/
+.idea/
+.cache/
+.clangd/
+.clangd
+compile_commands.json
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+venv/
+.venv/
+
+# Logs, dumps and scratch output
+*.log
+*.bak
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS metadata
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.directory
+
+# Local configuration and secrets
+.env
+.env.*
+*.local
+*.user
+*.suo

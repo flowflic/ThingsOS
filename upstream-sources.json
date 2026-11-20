@@ -1,0 +1,164 @@
+{
+  "system": "ThingsOS",
+  "target": "Metalio E-Ink4-Plus / ESP32-S31 (port of the Read Pico RDP-G01-W / ESP32-S3 build)",
+  "idf": "v6.1",
+  "metalio": {
+    "url": "https://github.com/CloudZao/Metalio-E-INK4-Plus",
+    "commit": "b400605e9a6a276a2c39864c0cff63798c78e8d8",
+    "license": "MIT",
+    "usage": "Board pin map, TPS65185 sequence, FT6336U bezel keys, ESP32-S31 LCD/DMA register values, BQ27220/CX25601N battery policy; drivers rewritten on the IDF I2C master API",
+    "local": [
+      "native/metalio/components/metalio_bsp",
+      "native/metalio/components/epdiy"
+    ],
+    "details": "native/metalio/components/epdiy/FORK-METALIO.md"
+  },
+  "official": {
+    "url": "https://github.com/MindReset/read_pico_firmware",
+    "commit": "ed1e9331077451a0391769cd6c191568f7901807"
+  },
+  "reader_reference": {
+    "url": "https://github.com/wegooo-cell/read-pico-reader",
+    "commit": "bb50077d51eb266e1add0cf050e79c2ac7ba95c6"
+  },
+  "crossmux": {
+    "url": "https://github.com/0x1abin/crossmux",
+    "commit": "1512e8e049f2b1a4efc7c004a5b1a93cbc5e3f9f",
+    "usage": "architecture and visual reference; no Arduino dependency"
+  },
+  "weidu_protocol_reference": {
+    "url": "https://github.com/0x1abin/crossmux",
+    "commit": "83b0f810c8628701456e028c2d8566a9be149755",
+    "usage": "Web wire-format and workflow reference; independently authored native C implementation"
+  },
+  "native_lcd_derivative": {
+    "source": "MindReset/read_pico_firmware@ed1e9331077451a0391769cd6c191568f7901807:components/epdiy/src/output_lcd/render_lcd.c",
+    "local": "native/firmware/components/thingsos_board/scan_adapter.c",
+    "license": "LGPL-3.0-or-later",
+    "changes": "Include paths and synchronous per-row phase LUT selection; official scan timing and reference checkout unchanged",
+    "details": "native/firmware/components/thingsos_board/scan_adapter.md"
+  },
+  "thumbnail_jpeg_decoder": {
+    "source": "MindReset/read_pico_firmware:main/book/vendor/tjpgd.c (TJpgDec R0.03, ChaN 2021)",
+    "local": "native/vendor/tjpgd",
+    "license": "ChaN permissive terms retained in tjpgd.c",
+    "decoder_sha256": "6ddab5ef63c60ac9290e355914ac8167ea9d6159a35c0301e753b68940b7c732",
+    "changes": "Decoder unchanged; portable stdint header and grayscale/block-scaling configuration. native/src/jpeg_decoder.c and .h namespace public entry points to avoid ESP32-S31 ROM ABI collisions (2026-10-30). The independently authored output adapter in native/src/image_thumbnail.c saturates signed fast-IDCT grayscale values before block averaging to prevent white-to-black wrap (2026-11-02); pinned vendor sources remain unchanged."
+  },
+  "shared_application": {
+    "source": "D:\\crossmux\\ThingsOS",
+    "commit": "a509301",
+    "version": "0.3.8",
+    "usage": "Shared reader, UI, interaction and thumbnail updates; Metalio BSP, S31 scan path, frontlight, power, audio hardware boundary and OTA board identity retained",
+    "later_worktree_changes": "Reader pagination, jump, input and reader-subpage refresh from the uncommitted 0.3.9 candidate on a509301, inspected 2026-10-27; board adaptation and validation are documented in native/docs/PICO-LATEST-20261027.md. Metalio version remains 0.3.6."
+  },
+  "metalio_bluetooth_protocol_reference": {
+    "url": "https://github.com/CloudZao/Metalio-E-INK4-Plus",
+    "commit": "b400605e9a6a276a2c39864c0cff63798c78e8d8",
+    "license": "MIT",
+    "source": "main/display/screen/bluetooth_screen/bluetooth_uart.cc and bluetooth_screen.cc",
+    "usage": "BH1098G UART commands, acknowledgements and wiring reference; independently authored worker, parser, persistence and UI. Reference checkout unchanged.",
+    "local": [
+      "native/firmware/components/thingsos_bluetooth",
+      "native/src/bluetooth_protocol.c",
+      "native/firmware/main/bluetooth_ui.inc"
+    ]
+  },
+  "recording_noise_suppression": {
+    "source": "https://github.com/espressif/esp-sr",
+    "commit": "bb552f1a559396a17681299cb3e199a0f1a4520a",
+    "version": "2.6.2",
+    "license": "ESPRESSIF MIT (Espressif products only); Apache-2.0 notices retained in interface headers",
+    "usage": "Unmodified ESP32-S31 NSNet3 archive, interface headers and model weights. Independently authored single-owner recording adapter and streaming/tail handling; no reference application code copied. Weights are embedded in the main app, not a separate flash partition.",
+    "fft_source": "https://github.com/espressif/esp-dl/tree/512ed0b0dc5f5320f3d9ca5a5aea189803f87f31/tools/dl_fft",
+    "fft_version": "0.8.0",
+    "fft_license": "MIT",
+    "local": [
+      "native/vendor/esp-sr",
+      "native/vendor/dl_fft",
+      "native/firmware/components/thingsos_audio/record_denoise.c",
+      "native/src/audio_denoise.c"
+    ],
+    "integrity": "native/vendor/sources.json",
+    "details": "native/docs/RECORDING-DENOISE.md"
+  },
+  "reader_async_tls_poll": {
+    "source": "ESP-IDF v6.1 components/esp-tls/esp_tls.c",
+    "license": "Apache-2.0",
+    "usage": "native/reader_tls_poll.cmake stages the installed IDF file into build/ and restores select fd_sets before each async connection poll. Upstream SPDX notice is retained; installed SDK and references are unchanged.",
+    "local": [
+      "native/reader_tls_poll.cmake",
+      "native/firmware/components/thingsos_weidu/reader_transport.inc"
+    ]
+  },
+  "ima_openapi_reference": {
+    "url": "https://ima.qq.com/agent-interface",
+    "cos_signature_reference": "https://cloud.tencent.com/document/product/436/7778",
+    "installed_skill_version": "1.1.7",
+    "usage": "Protocol documentation only; independent native HTTPS cloud streaming and local HTTP pairing UI. Device-local persistent credentials without an unlock password per user decision 2026-10-30. No skill runtime or credentials embedded.",
+    "api_reference_sha256": "6d0f134992257b07e5cbd5f602c1a8847bcc4ffd37b60938bae84d2015d4c8c4",
+    "local": [
+      "native/src/ima_protocol.c",
+      "native/firmware/components/thingsos_ima",
+      "native/firmware/main/ima_ui.inc"
+    ]
+  },
+  "weidu_offline_readtime": {
+    "miuread": {
+      "url": "https://github.com/miumiupy98-art/miuread-koreader",
+      "commit": "418380a0638381fcd8e2bad8d1f23be79fddd7c4",
+      "license": "AGPL-3.0-only",
+      "material": "miuread.koplugin/miuread/readtime_protocol.lua; later #184/#187 fixes reviewed"
+    },
+    "signature_origin": {
+      "url": "https://github.com/AnkioTomas/moon",
+      "commit": "43b2181da6eb5285b62114da85e1413d2f8464e4",
+      "license": "GPL-3.0",
+      "material": "book.koplugin/source/wechat/app.lua and public signature vector"
+    },
+    "native_auth_contract": {
+      "url": "https://github.com/teng-lin/weread-omni",
+      "commit": "88bd2e095d7d7ee423eaadf8f40653e72c5be6d4",
+      "license": "MIT"
+    },
+    "local": [
+      "native/src/weidu_readtime_protocol.c",
+      "native/src/weidu_readtime.c",
+      "native/firmware/components/thingsos_weidu/eink_readtime.inc"
+    ],
+    "details": "licenses/READTIME-SOURCES.md",
+    "boundary": "Protocol is an attributed copyleft adaptation; C spool, runtime and device integration are independently authored. Firmware distribution must address combined-work licensing; no publication in this change."
+  },
+  "txt_gbk_table_reference": {
+    "url": "https://github.com/espressif/esp-idf/blob/fff9895c82d744c7237be8847347bdd1b07c6643/components/fatfs/src/ffunicode.c",
+    "local": "native/vendor/fatfs-txt/gbk_unicode.inc",
+    "source_sha256": "892b9a0f4e4c4c4525000dae8fac012c784f1183de53753632959a36b28bdfdf",
+    "license": "ChaN FatFs original permissive license retained in native/vendor/fatfs-txt/LICENSE.txt",
+    "usage": "GBK/CP936 character mapping; new bounded TXT provider is independently written."
+  },
+  "minimp3_psram_adaptation": {
+    "url": "https://github.com/lieff/minimp3",
+    "license": "CC0-1.0",
+    "original_local": "native/vendor/minimp3/minimp3.h",
+    "original_sha256": "57e437c5c1f0e8b243885d3929c8973b5e6c778451e0100ab4251d19915cb3ad",
+    "upstream_revision": "Not recorded in the pre-existing vendor snapshot; original file pinned by SHA-256",
+    "local": "native/firmware/components/thingsos_audio/minimp3_psram.h",
+    "changes": "Caller-owned checked PSRAM scratch for decode_frame; decoder scratch references adapted, original CC0 notice retained",
+    "license_file": "native/vendor/minimp3/LICENSE"
+  },
+  "cubox_cli_reference": {
+    "url": "https://github.com/OLCUBO/cubox-cli",
+    "license": "MIT",
+    "note": "Protocol endpoints (/c/api/cli/folder/list, /c/api/cli/card/filter, /c/api/cli/card/detail, /c/api/cli/card/update, /c/api/cli/cards/archiving), Bearer token format and APIResponse code==200 envelope referenced from local cubox-cli v1.0.9 MIT release.",
+    "local": [
+      "native/include/thingsos/cubox_protocol.h",
+      "native/src/cubox_protocol.c",
+      "native/include/thingsos/cubox.h",
+      "native/firmware/components/thingsos_cubox/cubox.c",
+      "native/firmware/components/thingsos_cubox/secure.c",
+      "native/firmware/components/thingsos_cubox/cubox.html",
+      "native/firmware/main/cubox_ui.inc"
+    ],
+    "boundary": "Independently written in C11 for ThingsOS native firmware; no code copied from Go CLI."
+  }
+}

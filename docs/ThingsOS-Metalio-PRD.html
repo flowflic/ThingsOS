@@ -1,0 +1,399 @@
+<title>ThingsOS for Metalio</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column like a page on the device (narrow measure, generous margins), with wide tables and the schedule allowed to breathe. A 16-step GC16 grey ramp marks the masthead. */
+:root{
+  --paper:#f3f4f1;      /* e-paper white, faintly green-grey */
+  --sheet:#fbfbf9;      /* raised surface */
+  --ink:#16191b;        /* body text */
+  --ink-2:#4c5357;      /* secondary text */
+  --rule:#d5d9d6;       /* hairlines */
+  --accent:#2c5d73;     /* deep slate-teal, frontlight-cool */
+  --accent-soft:#dde8ec;
+  --warm:#9a6a2a;       /* warm frontlight, used for risks */
+  --warm-soft:#f1e6d6;
+  --p0:#16191b; --p1:#2c5d73; --p2:#8a9196;
+  --f-display:"Noto Serif SC","Songti SC","SimSun",Georgia,serif;
+  --f-body:"IBM Plex Sans",-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --paper:#141719; --sheet:#1b1f22; --ink:#e4e7e5; --ink-2:#a2aaad; --rule:#2e3437;
+    --accent:#7fb3c9; --accent-soft:#1f3540; --warm:#d9a865; --warm-soft:#3a2d1b;
+    --p0:#e4e7e5; --p1:#7fb3c9; --p2:#6b7377;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --paper:#141719; --sheet:#1b1f22; --ink:#e4e7e5; --ink-2:#a2aaad; --rule:#2e3437;
+  --accent:#7fb3c9; --accent-soft:#1f3540; --warm:#d9a865; --warm-soft:#3a2d1b;
+  --p0:#e4e7e5; --p1:#7fb3c9; --p2:#6b7377;
+}
+*{box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.6;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 80px}
+.wrap{max-width:880px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+h1,h2,h3{font-family:var(--f-display);font-weight:700;text-wrap:balance;margin:0;line-height:1.25}
+h1{font-size:clamp(2rem,5vw,2.75rem);letter-spacing:-.01em}
+h2{font-size:1.6rem}
+h3{font-size:1.1rem;font-weight:500}
+p{margin:0;max-width:68ch}
+.eyebrow{font-family:var(--f-mono);font-size:.75rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+section{display:flex;flex-direction:column;gap:18px}
+.sec-head{display:flex;align-items:baseline;gap:14px;border-top:1px solid var(--rule);padding-top:18px}
+.sec-head .n{font-family:var(--f-mono);font-size:.8rem;color:var(--accent)}
+code,.mono{font-family:var(--f-mono);font-size:.86em}
+code{background:var(--accent-soft);padding:1px 5px;border-radius:3px}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* masthead */
+header{display:flex;flex-direction:column;gap:18px}
+.ramp{display:grid;grid-template-columns:repeat(16,1fr);height:10px;border:1px solid var(--rule)}
+.ramp span:nth-child(1){background:#000}.ramp span:nth-child(2){background:#111}.ramp span:nth-child(3){background:#222}.ramp span:nth-child(4){background:#333}
+.ramp span:nth-child(5){background:#444}.ramp span:nth-child(6){background:#555}.ramp span:nth-child(7){background:#666}.ramp span:nth-child(8){background:#777}
+.ramp span:nth-child(9){background:#888}.ramp span:nth-child(10){background:#999}.ramp span:nth-child(11){background:#aaa}.ramp span:nth-child(12){background:#bbb}
+.ramp span:nth-child(13){background:#ccc}.ramp span:nth-child(14){background:#ddd}.ramp span:nth-child(15){background:#eee}.ramp span:nth-child(16){background:#fff}
+.ramp-cap{font-family:var(--f-mono);font-size:.7rem;color:var(--ink-2);display:flex;justify-content:space-between}
+.lede{font-size:1.12rem;color:var(--ink-2)}
+.meta{display:flex;flex-wrap:wrap;gap:8px 28px;font-size:.88rem;color:var(--ink-2)}
+.meta b{color:var(--ink);font-weight:600}
+
+/* verdict */
+.verdict{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--rule);border:1px solid var(--rule)}
+.verdict div{background:var(--sheet);padding:18px 20px;display:flex;flex-direction:column;gap:4px}
+.verdict .big{font-family:var(--f-display);font-size:1.7rem;font-weight:700;font-variant-numeric:tabular-nums}
+.verdict .lbl{font-size:.85rem;color:var(--ink-2)}
+@media (max-width:640px){.verdict{grid-template-columns:1fr}}
+
+/* tables */
+.tbl{overflow-x:auto;border:1px solid var(--rule);background:var(--sheet)}
+table{border-collapse:collapse;width:100%;font-size:.9rem;min-width:620px}
+th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--rule)}
+th{font-family:var(--f-mono);font-weight:500;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-2);background:var(--paper)}
+tr:last-child td{border-bottom:0}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+tr.total td{font-weight:600;background:var(--accent-soft)}
+.same{color:var(--accent);font-weight:600}
+
+/* scope */
+.scope{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media (max-width:760px){.scope{grid-template-columns:1fr}}
+.tier{border-top:3px solid var(--p0);padding-top:12px;display:flex;flex-direction:column;gap:8px}
+.tier.p1{border-color:var(--p1)}.tier.p2{border-color:var(--p2)}
+.tier h3{display:flex;gap:10px;align-items:baseline}
+.tag{font-family:var(--f-mono);font-size:.72rem;padding:1px 7px;border-radius:2px;color:var(--paper);background:var(--p0)}
+.p1 .tag{background:var(--p1)}.p2 .tag{background:var(--p2)}
+ul{margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:5px}
+li{max-width:66ch}
+.small{font-size:.9rem}
+.muted{color:var(--ink-2)}
+
+/* requirements */
+.reqs{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--rule)}
+.req{display:grid;grid-template-columns:150px 1fr;gap:6px 24px;padding:16px 0;border-bottom:1px solid var(--rule)}
+.req h3{font-size:1rem}
+.req .id{font-family:var(--f-mono);font-size:.72rem;color:var(--ink-2);display:block;margin-top:2px}
+.req .ac{font-size:.88rem;color:var(--ink-2)}
+.req .ac b{color:var(--ink);font-weight:600}
+@media (max-width:640px){.req{grid-template-columns:1fr}}
+
+/* architecture */
+.stack{display:flex;flex-direction:column;gap:6px;font-size:.88rem}
+.layer{display:grid;grid-template-columns:170px 1fr;gap:16px;padding:12px 14px;background:var(--sheet);border:1px solid var(--rule)}
+.layer .k{font-family:var(--f-mono);font-size:.78rem;color:var(--accent)}
+.layer.split{grid-template-columns:170px 1fr 1fr}
+.layer.split .b{border-left:1px dashed var(--rule);padding-left:14px}
+@media (max-width:640px){.layer,.layer.split{grid-template-columns:1fr}.layer.split .b{border-left:0;padding-left:0;border-top:1px dashed var(--rule);padding-top:8px}}
+
+/* gantt */
+.gantt{overflow-x:auto;border:1px solid var(--rule);background:var(--sheet);padding:16px 16px 12px}
+.g{min-width:640px;display:grid;grid-template-columns:190px 1fr;row-gap:8px;font-size:.84rem}
+.g .lab{padding-right:12px;display:flex;flex-direction:column;justify-content:center;line-height:1.3}
+.g .lab small{font-family:var(--f-mono);color:var(--ink-2);font-size:.72rem}
+.track{position:relative;height:30px;background:repeating-linear-gradient(to right,transparent 0,transparent calc(100%/12 - 1px),var(--rule) calc(100%/12 - 1px),var(--rule) calc(100%/12))}
+.bar{position:absolute;top:6px;height:18px;background:var(--accent);border-radius:2px}
+.bar.tail{background:repeating-linear-gradient(135deg,var(--accent) 0 3px,transparent 3px 7px);opacity:.7}
+.bar.crit{background:var(--ink)}
+.bar.soak{background:repeating-linear-gradient(135deg,var(--ink-2) 0 3px,transparent 3px 7px)}
+.axis{position:relative;height:20px;font-family:var(--f-mono);font-size:.7rem;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.axis span{position:absolute;transform:translateX(-50%)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 20px;font-size:.8rem;color:var(--ink-2);margin-top:10px}
+.legend i{display:inline-block;width:18px;height:10px;margin-right:6px;vertical-align:middle;border-radius:2px}
+.release{position:absolute;top:0;bottom:0;border-left:2px solid var(--warm)}
+
+/* risks */
+.risks{display:flex;flex-direction:column;gap:10px}
+.risk{display:grid;grid-template-columns:86px 1fr;gap:16px;padding:14px 16px;background:var(--sheet);border:1px solid var(--rule)}
+.sev{font-family:var(--f-mono);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;padding:2px 6px;height:fit-content;text-align:center;border-radius:2px}
+.sev.hi{background:var(--warm);color:var(--paper)}
+.sev.md{background:var(--warm-soft);color:var(--warm)}
+.sev.lo{background:var(--accent-soft);color:var(--accent)}
+.risk p{font-size:.9rem}
+.risk .mit{color:var(--ink-2);margin-top:4px}
+@media (max-width:520px){.risk{grid-template-columns:1fr}}
+
+ol.q{margin:0;padding-left:1.3em;display:flex;flex-direction:column;gap:8px}
+footer{font-size:.82rem;color:var(--ink-2);border-top:1px solid var(--rule);padding-top:16px}
+</style>
+
+<div class="wrap">
+
+<header>
+  <div>
+    <div class="ramp" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="ramp-cap" aria-hidden="true"><span>GC16 · level 0</span><span>level 15</span></div>
+  </div>
+  <span class="eyebrow">Product requirements · draft 1</span>
+  <h1>ThingsOS for Metalio E-Ink4-Plus</h1>
+  <p class="lede">This plan ports ThingsOS 0.3.5, the reading-first e-ink OS built for the Read Pico, to the Metalio E-Ink4-Plus. Both devices use the same 684 × 1216 screen, so the whole UI carries over. The work is mostly hardware: a new chip, a new panel power path and a new set of peripherals.</p>
+  <div class="meta">
+    <span><b>Source system</b> ThingsOS 0.3.5 · Read Pico RDP-G01-W · ESP32-S3</span>
+    <span><b>Target</b> Metalio E-Ink4-Plus · ESP32-S31</span>
+    <span><b>Toolchain</b> ESP-IDF v6.1</span>
+    <span><b>Date</b> 2026-10-23</span>
+  </div>
+</header>
+
+<section aria-label="Estimate summary">
+  <div class="verdict">
+    <div><span class="big">8–12 weeks</span><span class="lbl">to ThingsOS 1.0 on Metalio (P0 + P1). One developer with an AI coding agent.</span></div>
+    <div><span class="big">38–59 days</span><span class="lbl">of engineering effort. A conventional estimate without AI help is 72–109 days.</span></div>
+    <div><span class="big">2–3 weeks</span><span class="lbl">to the first demo: library and reading on the real panel, before sleep and OTA work.</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§1</span><h2>Why this port is feasible</h2></div>
+  <p>ThingsOS already keeps the hardware behind one interface, <code>thingsos_board/board.h</code>, which has about 35 functions for drawing, touch, tilt, time, battery, sleep and USB. The app layer (<code>native/src</code>, about 9.4k lines, plus <code>firmware/main</code>, about 7.6k) doesn't depend on the board, and its 23 host tests run without hardware. The panels match pixel for pixel, so prototype v3, landscape mode and every touch area are reused as they are.</p>
+  <p>The interface has a few leaks to fix first. There are 23 direct calls to <code>read_pico_*</code>, <code>cst836u_*</code> or <code>pmu_*</code> spread across <code>main.c</code>, <code>network.c</code>, <code>weidu_device.c</code> and the rescue app. <code>board.h</code> exposes the CST836U touch type. The USB and cache headers are hard-wired to the ESP32-S3.</p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§2</span><h2>Hardware delta</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Area</th><th>Read Pico (today)</th><th>Metalio E-Ink4-Plus</th><th>Port work</th></tr></thead>
+    <tbody>
+      <tr><td>Screen</td><td>4.7", UI 684 × 1216</td><td>ED047TC2 4.7", native 1216 × 684</td><td class="same">Same geometry. Layouts reused.</td></tr>
+      <tr><td>MCU</td><td>ESP32-S3, Xtensa</td><td>ESP32-S31, RISC-V, 16 MB flash, octal PSRAM at 200 MHz</td><td>New target and sdkconfig. No Xtensa SIMD in epdiy, so the pixel-packing path needs profiling.</td></tr>
+      <tr><td>Panel power</td><td>Official BSP with an MCU-based PMU; VCOM is read only</td><td>TPS65185 controlled through TCA9555 pins P0.0–P0.2, power-good on P0.7; custom GC/GL/DU waveforms</td><td>Rewrite <code>scan_adapter.c</code>, stagger and partial-row refresh on the S31 LCD driver.</td></tr>
+      <tr><td>Touch</td><td>CST836U</td><td>FT6336U at 0x38, INT on GPIO5, reset on TCA P1.2. Bezel keys HOME / PREV / NEXT report at Y ≈ 1600.</td><td>New adapter. Map the bezel keys to <code>keys.h</code>.</td></tr>
+      <tr><td>Keys</td><td>Key events from the PMU</td><td>POWER on P1.7, BOOT on GPIO61, Vol+ / Vol− on P1.0 / P1.1</td><td>New key and power state machine.</td></tr>
+      <tr><td>Power-off</td><td>PMU</td><td>Pulse on P1.3 (PWR_KEY_PULSE)</td><td>Real shutdown path.</td></tr>
+      <tr><td>Battery</td><td>PMU</td><td>BQ27220 gauge at 0x55, CX25601N charger at 0x6B</td><td>Charge percentage and charging state.</td></tr>
+      <tr><td>Clock</td><td>System clock, set over the network</td><td>PCF8563 RTC at 0x51</td><td>Correct time with no network.</td></tr>
+      <tr><td>Tilt sensor</td><td>SC7A20H</td><td>SC7A20H at 0x19</td><td class="same">Same chip. Check the axis signs again.</td></tr>
+      <tr><td>SD card</td><td>BSP</td><td>SDMMC 4-bit on GPIO20–25</td><td>Small adapter.</td></tr>
+      <tr><td>USB disk</td><td>TinyUSB dwc2 FS</td><td>TinyUSB HS UTMI; ANA_SW on GPIO36 selects the path</td><td>Reconfigure the PHY and port.</td></tr>
+      <tr><td>Metalio only</td><td>None</td><td>Cool/warm frontlight (GPIO6/7), vibration motor (P0.3), Bluetooth audio over UART AT and I2S, speaker amp (P0.4)</td><td>New features (P1 / P2).</td></tr>
+    </tbody>
+  </table></div>
+  <p class="small muted">Reusable drivers in the Metalio repo (MIT, © Shenzhen Xinzhi Future Technology; epdiy files are LGPL-3.0): <code>bus/pca9555.c</code>, <code>bus/tps65185.c</code>, <code>display/output_lcd/lcd_driver.c</code>, <code>display/epd_board_metalio_eink4_plus.c</code>, <code>display/metalio_touch.c</code>, <code>periph/frontlight.cc</code>, <code>periph/metalio_rtc.cc</code> and the <code>config.h</code> pin map. Following the AGENTS.md policy, record where each comes from in <code>upstream-sources.json</code>. Don't import the xiaozhi app or the LVGL stack.</p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§3</span><h2>Goals and non-goals</h2></div>
+  <ul>
+    <li><b>Goal:</b> ThingsOS 1.0 runs on Metalio and matches every reading feature of 0.3.5.</li>
+    <li><b>Goal:</b> Users can use the hardware only Metalio has: frontlight, volume keys, haptics, the RTC and a real power-off.</li>
+    <li><b>Goal:</b> One codebase builds for both boards. Board choice is a build setting, and shared code has no per-board forks.</li>
+    <li><b>Goal:</b> The safety model of 0.3.5 stays intact: rescue partition, boot guard, verified OTA and factory-owned VCOM.</li>
+    <li><b>Non-goal for 1.0:</b> LVGL, the xiaozhi voice stack, the Metalio cloud push service (its endpoints are blank in the open-source repo) and Bluetooth audio.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§4</span><h2>Users and scenarios</h2></div>
+  <ul>
+    <li><b>Long-form reader:</b> reads EPUB, TXT and Markdown from SD for hours. Wants fast page turns, little ghosting and reading statistics they can trust.</li>
+    <li><b>WeRead (微读) user:</b> syncs their shelf, highlights and notes, and reads cached books offline.</li>
+    <li><b>Night reader:</b> uses the warm frontlight in bed and turns pages with the volume keys without touching the screen.</li>
+    <li><b>Collector:</b> loads books and fonts over Wi-Fi, the hotspot or the USB disk mode.</li>
+    <li><b>Tinkerer:</b> updates firmware from the browser and expects to recover from a bad build without opening the case.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§5</span><h2>Scope</h2></div>
+  <div class="scope">
+    <div class="tier">
+      <h3><span class="tag">P0</span>Parity with 0.3.5</h3>
+      <ul class="small">
+        <li>One combined EPUB/TXT library, recent books, cover images</li>
+        <li>SD file browser; the built-in read-only <code>Example.txt</code> is visible only here</li>
+        <li>Reader: font size 30–70 in steps of 4, line spacing, margins, nested table of contents, bookmarks, jump, footnotes, image zoom and pan, CJK punctuation line-break rules, landscape</li>
+        <li>Full built-in 方正屏显雅宋 font; extra fonts from <code>/sdcard/fonts</code></li>
+        <li>Reading stats by day, week and month, plus hourly detail</li>
+        <li>微读 shelf, highlights, notes and search</li>
+        <li>Wi-Fi and hotspot transfer through a web page, USB disk mode</li>
+        <li>Browser OTA, factory rescue app, boot guard, ROM download mode</li>
+        <li>Auto-lock with a wallpaper; tilt page-turn with three sensitivity levels</li>
+      </ul>
+    </div>
+    <div class="tier p1">
+      <h3><span class="tag">P1</span>Metalio hardware</h3>
+      <ul class="small">
+        <li>Frontlight: cool, warm, both or off, with brightness. In the reader quick panel and in Settings, saved in NVS</li>
+        <li>Volume keys turn pages; the bezel HOME / PREV / NEXT keys are mapped</li>
+        <li>Haptic feedback on key presses, with an on/off setting</li>
+        <li>Time from the RTC without a network; sync when online</li>
+        <li>Battery percentage and charging state from the BQ27220 and CX25601N</li>
+        <li>Long-press POWER for a real power-off</li>
+      </ul>
+    </div>
+    <div class="tier p2">
+      <h3><span class="tag">P2</span>Later, optional</h3>
+      <ul class="small">
+        <li>Read-aloud (TTS) through the Bluetooth audio chip</li>
+        <li>Voice assistant (needs a backend you run yourself)</li>
+        <li>Bluetooth headset and speaker modes</li>
+        <li>Signed OTA images</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§6</span><h2>Functional requirements</h2></div>
+  <div class="reqs">
+    <div class="req"><div><h3>Display</h3><span class="id">FR-DSP</span></div>
+      <div><p>Bring up the panel with the TPS65185 power sequence and the ED047TC2 waveforms. Support full GC16, partial differential refresh, the staggered page turn, keyboard and status-bar row updates, and a clear-then-redraw before sleep.</p>
+      <p class="ac"><b>Accepted when:</b> ghosting after 20 page turns matches the Read Pico or is better; a full refresh happens every N pages as configured; no frame tearing while Wi-Fi is active; panel temperature is read and checked before every drive.</p></div></div>
+    <div class="req"><div><h3>Touch and keys</h3><span class="id">FR-INP</span></div>
+      <div><p>FT6336U with the existing tap, drag and long-press logic. Bezel keys come in as touch points at Y ≈ 1600. Vol+ and Vol− turn pages in the reader. POWER short press locks or wakes, long press powers off. Landscape rotates touch and tilt as 0.3.5 does.</p>
+      <p class="ac"><b>Accepted when:</b> every prototype v3 touch area hits within ±4 px in both orientations; no ghost touches during a panel drive; key presses work while the panel is refreshing.</p></div></div>
+    <div class="req"><div><h3>Power and sleep</h3><span class="id">FR-PWR</span></div>
+      <div><p>Auto-lock after 1, 5 or 15 minutes. Turn off the panel rails, put touch and the tilt sensor to sleep, stop Wi-Fi and enter light sleep. Wake with POWER through the TCA9555 interrupt on GPIO2. Use the P1.3 pulse to power off. Show the gauge reading in the status bar.</p>
+      <p class="ac"><b>Accepted when:</b> 100 sleep and wake cycles all succeed; standby current is measured and written down; charging state is shown correctly on USB.</p></div></div>
+    <div class="req"><div><h3>Storage</h3><span class="id">FR-STO</span></div>
+      <div><p>4-bit SDMMC mount. Keep the existing dual-slot, CRC-checked record files under <code>.thingsos/</code>. The USB disk uses the HS UTMI PHY and drives ANA_SW low, and reading pauses while it is on.</p>
+      <p class="ac"><b>Accepted when:</b> pulling power during a stats save loses at most one 30-second checkpoint; the USB disk copies 1 GB without corruption.</p></div></div>
+    <div class="req"><div><h3>Network</h3><span class="id">FR-NET</span></div>
+      <div><p>Station mode with saved networks. The hotspot opens only on the transfer page. The web transfer page, the 微读 client and the network probe are unchanged.</p>
+      <p class="ac"><b>Accepted when:</b> a 50 MB EPUB uploads over Wi-Fi; the 微读 shelf and highlights sync on the real service.</p></div></div>
+    <div class="req"><div><h3>Update and recovery</h3><span class="id">FR-OTA</span></div>
+      <div><p>16 MB layout: a 2 MiB factory/rescue app, a 10.875 MiB main app and a 3 MiB system font. The rescue app on S31 needs only the hotspot and HTTP OTA. The boot guard switches to rescue on the third failed boot. The web flasher supports S31.</p>
+      <p class="ac"><b>Accepted when:</b> pulling power at five points during an OTA always ends in a bootable device; a deliberately crashing build falls back to rescue; recovery through ROM download mode works.</p></div></div>
+    <div class="req"><div><h3>Frontlight</h3><span class="id">FR-FL</span></div>
+      <div><p>Two channels, cool and warm, each with brightness in 10 % steps. The reader quick panel and Settings share the same state. The frontlight turns off on lock and is restored on wake.</p>
+      <p class="ac"><b>Accepted when:</b> no visible flicker at any brightness level; the setting survives a reboot.</p></div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§7</span><h2>Non-functional targets</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Metric</th><th>Target</th><th>How it's measured</th></tr></thead>
+    <tbody>
+      <tr><td>Page turn, partial refresh</td><td class="num">≤ 450 ms</td><td>Time from touch up to the end of the panel drive, from logs</td></tr>
+      <tr><td>Cold boot to library</td><td class="num">≤ 5 s</td><td>Time from power key to the first library frame</td></tr>
+      <tr><td>Opening a 5 MB EPUB, first page</td><td class="num">≤ 3 s</td><td>Device log, cold cache</td></tr>
+      <tr><td>Standby (light sleep)</td><td class="num">Measure first, then set a target</td><td>USB power meter, 8 hours</td></tr>
+      <tr><td>Continuous reading</td><td class="num">≥ 1 page per 30 s for 8 h</td><td>Seven-day soak with logs</td></tr>
+      <tr><td>Data safety</td><td>No lost bookmarks or progress</td><td>Power-pull test matrix</td></tr>
+      <tr><td>Panel safety</td><td>VCOM is never written beyond the factory value</td><td>Code review and a log check</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§8</span><h2>Architecture</h2></div>
+  <p>Keep one tree, <code>native/</code>, and split the board layer into one component per device. A Kconfig option <code>THINGSOS_BOARD_READ_PICO</code> / <code>THINGSOS_BOARD_METALIO</code> picks the component, the sdkconfig defaults and the packaging target.</p>
+  <div class="stack">
+    <div class="layer"><span class="k">app · native/src</span><span>Reader, EPUB/TXT/Markdown, layout, graphics, stats, store, 微读, input. Unchanged, and the host tests stay green.</span></div>
+    <div class="layer"><span class="k">ui · firmware/main</span><span>Pages and features. Remove the direct BSP calls and route them through <code>board.h</code>.</span></div>
+    <div class="layer"><span class="k">services</span><span><code>thingsos_net</code>, <code>thingsos_weidu</code>, OTA and rescue. Change only the PMU and touch calls.</span></div>
+    <div class="layer"><span class="k">board.h</span><span>A board-neutral interface with its own <code>thingsos_touch_t</code>, plus new calls for frontlight, haptics and volume keys (stubbed on Read Pico).</span></div>
+    <div class="layer split"><span class="k">board components</span><span><b>thingsos_board_read_pico</b><br>Current <code>board.c</code>, <code>scan_adapter.c</code> and USB code</span><span class="b"><b>thingsos_board_metalio</b><br>TCA9555, TPS65185, S31 LCD scan, FT6336U, BQ27220, PCF8563, frontlight, HS USB</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§9</span><h2>Milestones and effort</h2></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Milestone</th><th>Work</th><th>AI-assisted (days)</th><th>Conventional (days)</th></tr></thead>
+    <tbody>
+      <tr><td>M0 Multi-board split</td><td>Board-neutral <code>board.h</code>, fix the 23 leaks, Kconfig, S31 sdkconfig and partitions, build and verify scripts</td><td class="num">3–5</td><td class="num">8–12</td></tr>
+      <tr><td>M1 Display bring-up</td><td>TCA9555 and TPS65185 power-up, S31 LCD scan, waveforms, port of scan_adapter, stagger, partial rows and differential GC16, ghosting tuning</td><td class="num">8–12</td><td class="num">15–25</td></tr>
+      <tr><td>M2 Input, power, storage</td><td>FT6336U and bezel keys, POWER / BOOT / volume keys, gauge and charger, RTC, SDMMC, light sleep and wake, power-off, tilt check, HS USB disk</td><td class="num">8–12</td><td class="num">15–20</td></tr>
+      <tr><td>M3 Rescue and OTA on S31</td><td>Rescue app, boot guard, OTA slots, ROM download, web flasher for S31</td><td class="num">4–6</td><td class="num">8–12</td></tr>
+      <tr><td>M4 Parity and performance</td><td>Full UI pass on the device; FreeType, JPEG and layout speed on RISC-V; Wi-Fi and hotspot; 微读; stats</td><td class="num">5–8</td><td class="num">10–15</td></tr>
+      <tr><td>M5 Metalio features</td><td>Frontlight UI, volume-key paging, haptics, RTC clock, battery UI</td><td class="num">4–6</td><td class="num">6–10</td></tr>
+      <tr><td>M6 Validation and release</td><td>Acceptance matrix, power-pull and rollback tests, standby current, seven-day soak, release package</td><td class="num">6–10</td><td class="num">10–15</td></tr>
+      <tr class="total"><td>ThingsOS 1.0 (P0 + P1)</td><td>About 8–12 calendar weeks AI-assisted, 4–5.5 months conventional</td><td class="num">38–59</td><td class="num">72–109</td></tr>
+      <tr><td>P2 audio (optional)</td><td>Bluetooth AT control, I2S and Opus, read-aloud or assistant, backend</td><td class="num">+15–25</td><td class="num">+30–45</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="gantt" role="img" aria-label="Likely schedule over 12 weeks: M0 in week 1, display bring-up in weeks 1 to 3, input and power in weeks 3 to 4, rescue and OTA in week 5, parity and Metalio features in weeks 6 to 7, validation and soak in weeks 7 to 10, release around week 10 with a range of 8 to 12.">
+    <div class="g">
+      <div></div>
+      <div class="axis"><span style="left:0%">wk 0</span><span style="left:16.67%">2</span><span style="left:33.33%">4</span><span style="left:50%">6</span><span style="left:66.67%">8</span><span style="left:83.33%">10</span><span style="left:100%">12</span></div>
+
+      <div class="lab">M0 Multi-board split<small>3–5 d</small></div>
+      <div class="track"><div class="bar crit" style="left:0%;width:5%"></div><div class="bar tail" style="left:5%;width:3.33%"></div></div>
+
+      <div class="lab">M1 Display bring-up<small>8–12 d · critical</small></div>
+      <div class="track"><div class="bar crit" style="left:6.67%;width:13.33%"></div><div class="bar tail" style="left:20%;width:6.67%"></div></div>
+
+      <div class="lab">M2 Input, power, storage<small>8–12 d · starts with touch</small></div>
+      <div class="track"><div class="bar crit" style="left:16.67%;width:13.33%"></div><div class="bar tail" style="left:30%;width:6.67%"></div></div>
+
+      <div class="lab">M3 Rescue and OTA<small>4–6 d</small></div>
+      <div class="track"><div class="bar" style="left:33.33%;width:6.67%"></div><div class="bar tail" style="left:40%;width:3.33%"></div></div>
+
+      <div class="lab">M4 Parity and performance<small>5–8 d</small></div>
+      <div class="track"><div class="bar" style="left:41.67%;width:8.33%"></div><div class="bar tail" style="left:50%;width:5%"></div></div>
+
+      <div class="lab">M5 Metalio features<small>4–6 d · parallel</small></div>
+      <div class="track"><div class="bar" style="left:43.33%;width:6.67%"></div><div class="bar tail" style="left:50%;width:3.33%"></div></div>
+
+      <div class="lab">M6 Validation and release<small>6–10 d + 7-day soak</small></div>
+      <div class="track"><div class="bar crit" style="left:52.5%;width:10%"></div><div class="bar soak" style="left:62.5%;width:11.67%"></div><div class="bar tail" style="left:74.17%;width:6.67%"></div><div class="release" style="left:83.33%" title="Likely 1.0 release, week 10"></div></div>
+
+      <div></div>
+      <div class="axis"><span style="left:66.67%">wk 8 best case</span><span style="left:83.33%">wk 10 likely</span><span style="left:100%">wk 12</span></div>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--ink)"></i>Critical path</span>
+      <span><i style="background:var(--accent)"></i>Other work</span>
+      <span><i style="background:repeating-linear-gradient(135deg,var(--accent) 0 3px,transparent 3px 7px)"></i>Pessimistic overrun</span>
+      <span><i style="background:repeating-linear-gradient(135deg,var(--ink-2) 0 3px,transparent 3px 7px)"></i>Soak test, mostly waiting</span>
+      <span><i style="background:var(--warm)"></i>Likely release</span>
+    </div>
+  </div>
+
+  <p class="small muted"><b>Assumptions.</b> One embedded developer works with an AI coding agent at the pace ThingsOS already showed: about 21k lines of app and board code plus 6.5k lines of tests between 2026-10-11 and 10-23. They have at least two Metalio units, a serial cable and the vendor schematic. Coding speeds up a lot with AI help. Panel bring-up, power measurement and soak testing don't, so the hardware milestones dominate the schedule.</p>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§10</span><h2>Risks</h2></div>
+  <div class="risks">
+    <div class="risk"><span class="sev hi">High</span><div><p><b>The source of the panel VCOM value is unknown.</b> On Read Pico the PMU owns the factory VCOM. On Metalio the TPS65185 register is set by firmware.</p><p class="mit">Mitigation: get the per-unit VCOM source from Xinzhi before M1, and keep ThingsOS's rule that the factory value is never overwritten.</p></div></div>
+    <div class="risk"><span class="sev hi">High</span><div><p><b>The ESP32-S31 is a new chip.</b> IDF v6.1 support, esptool and esp-web-tools browser flashing may still be immature.</p><p class="mit">Mitigation: build the S31 rescue app and the web-flasher test in week 1. Keep a USB-serial fallback.</p></div></div>
+    <div class="risk"><span class="sev md">Medium</span><div><p><b>epdiy has no SIMD path on RISC-V.</b> LUT and packing speed may push page turns past 450 ms.</p><p class="mit">Mitigation: profile <code>thingsos_panel_pack*</code> on S31 in M1. Optimize the C loops and use row-limited packing.</p></div></div>
+    <div class="risk"><span class="sev md">Medium</span><div><p><b>The TCA9555 interrupt line is shared</b> with the accelerometer and RTC, which can cause spurious or missed wakes.</p><p class="mit">Mitigation: read all interrupt sources on wake, and include a wake test in the 100-cycle sleep matrix.</p></div></div>
+    <div class="risk"><span class="sev md">Medium</span><div><p><b>Hardware revisions V1.3 and V1.4 differ</b> in the XSTL and MODE pins.</p><p class="mit">Mitigation: detect the revision at boot or make it a build setting. Test on both if possible.</p></div></div>
+    <div class="risk"><span class="sev lo">Low</span><div><p><b>The FT6336U touch firmware upgrade blob</b> ships in the vendor tree.</p><p class="mit">Mitigation: don't flash touch firmware from ThingsOS. Only read its version.</p></div></div>
+    <div class="risk"><span class="sev lo">Low</span><div><p><b>With a single dev unit there's no spare</b> if the board bricks during bootloader or partition work.</p><p class="mit">Mitigation: plan for two units, and dump the full flash before the first ThingsOS install.</p></div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><span class="n">§11</span><h2>Open questions</h2></div>
+  <ol class="q">
+    <li>How many Metalio units are available, and which hardware revision is each one?</li>
+    <li>Can Xinzhi share the schematic and the per-unit VCOM calibration source?</li>
+    <li>Is any P2 audio feature, such as read-aloud, required for 1.0?</li>
+    <li>Should the Metalio build be released on thingsos.netlify.app with a board picker, or on a separate site?</li>
+    <li>Should the Read Pico build stay in active development during the port, or freeze at 0.3.5?</li>
+  </ol>
+</section>
+
+<footer>Sources: ThingsOS <code>native/</code> (ARCHITECTURE.md, README.md, board.h, board.c) and CloudZao/Metalio-E-INK4-Plus (README, <code>main/boards/metalio-e-ink4-plus/</code>). The estimates are planning ranges and need to be checked again after the M1 display bring-up.</footer>
+</div>

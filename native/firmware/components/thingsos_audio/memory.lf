@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# CPU-only NSNet3 activation tables (2 x 8208 bytes). The independently written
+# recording adapter runs inference on local_audio, never in an ISR or DMA path.
+# Preserve the pinned Espressif archive; only choose its BSS placement.
+[mapping:thingsos_nsnet_math_psram]
+archive: libnsnet3.a
+entries:
+    if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        gtcrn_math (extram_bss)

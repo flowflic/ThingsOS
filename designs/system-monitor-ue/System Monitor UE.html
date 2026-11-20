@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<!--
+UE only. No device connections or firmware changes.
+Context: existing Metalio apps launcher and 684×1216 monochrome native UI.
+Assumptions: CPU ceiling 320 MHz (current build), PSRAM 16 MiB and Flash
+16 MiB (verified boot/layout); all live utilization values are mock data.
+SRAM capacity is an illustrative allocatable heap, not physical chip SRAM.
+Flash occupied = main image + other reserved partitions; remainder = main
+slot upgrade headroom. This is not SD storage or a scan of programmed pages.
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ThingsOS · 系统应用 UE 原型</title>
+  <style>
+    :root{color-scheme:light;--ink:#171715;--paper:#f4f3ef;--muted:#73736b;--line:#d8d7ce;--scale:.65}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--paper);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+    button,input{font:inherit}button{cursor:pointer}button:focus-visible,a:focus-visible{outline:2px solid #666;outline-offset:4px}
+    .workspace{max-width:1080px;margin:auto;min-height:100svh;display:grid;grid-template-columns:285px minmax(0,1fr);gap:70px;padding:40px 38px}
+    aside{padding-top:20px}.brand{margin:0 0 18px;font-size:12px;letter-spacing:.09em;color:var(--muted)}h1{font-size:44px;font-weight:500;letter-spacing:-.04em;margin:0 0 14px;line-height:1.2}.intro{font-size:14px;line-height:1.8;color:#64645d;margin:0 0 30px}
+    .section-label{display:block;font-size:11px;letter-spacing:.08em;font-weight:600;margin:28px 0 12px;color:var(--muted)}
+    .page-nav{display:flex;gap:8px}.page-nav button{background:transparent;border:1px solid #bdbdb2;border-radius:5px;padding:10px 15px;font-size:13px;flex:1}.page-nav button[aria-pressed="true"]{background:var(--ink);border-color:var(--ink);color:#fff}
+    .presets{display:flex;flex-direction:column;border-top:1px solid var(--line)}.preset{display:flex;align-items:center;justify-content:space-between;padding:13px 0;border:0;border-bottom:1px solid var(--line);background:none;text-align:left;font-size:14px}.preset span{font-size:12px;color:var(--muted)}.preset[aria-pressed="true"]::after{content:"●";font-size:9px}.preset[aria-pressed="true"] span{margin-left:auto;margin-right:14px}
+    .simulation{display:flex;align-items:center;gap:10px;font-size:13px;margin-top:22px}.simulation input{accent-color:#222;width:16px;height:16px;margin:0}
+    .notes{margin-top:30px;padding-top:18px;border-top:1px solid var(--line);font-size:12px;line-height:1.9;color:#77776e}.notes p{margin:0 0 10px}.notes strong{color:#3e3e39;font-weight:500}.review{font-size:12px;color:#77776e;margin-top:28px;line-height:1.8}
+    .preview{min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:13px}.preview-label{font-size:11px;color:#818177;letter-spacing:.05em;width:100%;text-align:center;margin:0}
+    .screen-frame{position:relative;width:calc(684px * var(--scale));height:calc(1216px * var(--scale));flex:none;background:#fff;border:1px solid #d2d2ca;box-sizing:content-box;box-shadow:0 9px 40px #2424190b}
+    .screen{position:absolute;width:684px;height:1216px;left:0;top:0;transform:scale(var(--scale));transform-origin:top left;background:white;overflow:hidden;color:#000;font-family:"SimSun","Songti SC","Noto Serif CJK SC","Noto Serif SC",serif}
+    .reference{position:absolute;inset:0;width:684px;height:1216px;pointer-events:none}.clock{position:absolute;top:19px;left:25px;min-width:215px;height:42px;background:#fff;font:28px/42px "Times New Roman","SimSun",serif;white-space:nowrap}
+    .launcher,.system-page{position:absolute;inset:0}.launcher[hidden],.system-page[hidden]{display:none}
+    .system-tile{position:absolute;left:36px;top:616px;width:192px;height:190px;background:none;border:0;padding:0;display:flex;align-items:center;flex-direction:column;color:#000}.system-tile svg{width:108px;height:108px;flex:none}.system-tile span{margin-top:24px;font:600 32px/44px "SimSun","Songti SC","Noto Serif CJK SC",serif}.system-tile:active svg{background:#e9e9e9;border-radius:20px}
+    .system-page{top:74px;height:1024px;background:#fff}.system-header{position:absolute;left:36px;top:37px;right:36px;height:100px;border-bottom:1px solid #aaa}.system-header h2{margin:11px 100px 0;text-align:center;font-size:34px;font-weight:600;line-height:54px}.back,.refresh{position:absolute;top:0;height:82px;background:none;border:0;color:#000;padding:0;font-family:inherit}.back{left:-12px;width:110px;display:flex;align-items:center;justify-content:center;gap:11px;font-size:26px}.back svg{width:19px;height:30px}.refresh{right:-7px;width:100px;font-size:26px}.back:active,.refresh:active{background:#eee}
+    .live-status{position:absolute;left:36px;right:36px;top:152px;display:flex;justify-content:space-between;font-size:21px;line-height:30px;color:#555}.live-status span:first-child{display:flex;align-items:center;gap:10px}.live-status i{display:inline-block;width:8px;height:8px;background:#444;border-radius:50%}.live-status time{font-variant-numeric:tabular-nums}
+    .metrics{position:absolute;top:190px;left:36px;right:36px}.metric{height:148px}.metric-heading{height:42px;display:flex;align-items:baseline;justify-content:space-between;gap:12px}.metric-heading h3{margin:0;font-size:30px;line-height:42px;font-weight:500;white-space:nowrap}.metric-heading small{font-size:22px;color:#555;margin-left:10px;font-weight:400}.metric-value{font-size:32px;line-height:42px;white-space:nowrap;font-variant-numeric:tabular-nums}.meter{height:28px;position:relative;border:1.5px solid #000;background:#e8e8e8;margin-top:15px;overflow:hidden}.fill{position:absolute;inset:0 auto 0 0;width:var(--used);background:#111}.metric-meta{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:22px;line-height:30px;margin-top:12px;white-space:nowrap;font-variant-numeric:tabular-nums}.metric-meta .remaining{color:#444}.system-footnote{position:absolute;left:36px;right:36px;bottom:38px;margin:0;color:#666;font-size:21px;line-height:31px}.apps-tab{position:absolute;left:342px;top:1099px;width:171px;height:117px;border:0;background:transparent}
+    .prototype-tag{font-size:11px;color:#79796f;margin:0;text-align:center;line-height:1.7}
+    @media(max-width:800px){.workspace{grid-template-columns:1fr;gap:26px;padding:24px 18px}.workspace aside{padding:0;max-width:550px;width:100%;margin:auto}h1{font-size:30px}.brand{margin-bottom:9px}.intro{margin-bottom:16px}.section-label{margin-top:20px}.presets{display:flex;flex-direction:row;gap:18px;border:0}.preset{flex:1;padding:10px 0;font-size:12px;white-space:nowrap;gap:5px}.preset span{display:none}.preset[aria-pressed="true"]::after{font-size:7px}.simulation{margin-top:16px}.notes{margin-top:18px;padding-top:12px;line-height:1.7}.notes p{margin-bottom:6px}.review{display:none}.preview{gap:12px}}
+    @media(max-width:800px){.preview{order:1}.workspace aside{order:2}}
+    .export-screen body{width:684px;min-height:1216px;background:#fff}.export-screen .workspace{display:block;width:684px;min-height:1216px;margin:0;padding:0}.export-screen aside,.export-screen .preview-label,.export-screen .prototype-tag{display:none}.export-screen .preview{display:block}.export-screen .screen-frame{width:684px;height:1216px;border:0;box-shadow:none}
+    @media(prefers-reduced-motion:no-preference){.page-nav button,.preset{transition:background-color .12s,color .12s}}
+  </style>
+</head>
+<body>
+  <main class="workspace">
+    <aside>
+      <p class="brand">ThingsOS / Metalio E-Ink4-Plus</p>
+      <h1>系统</h1>
+      <p class="intro">新增应用入口，一页查看 CPU 与内存状态。<br>684 × 1216，沿用当前设备的黑白界面。</p>
+      <span class="section-label">页面</span>
+      <div class="page-nav" aria-label="原型页面">
+        <button type="button" data-page="apps" aria-pressed="false">应用入口</button>
+        <button type="button" data-page="system" aria-pressed="true">监控页面</button>
+      </div>
+      <span class="section-label">模拟运行状态</span>
+      <div class="presets" aria-label="模拟数据场景">
+        <button class="preset" type="button" data-preset="reading" aria-pressed="true">阅读中<span>普通占用</span></button>
+        <button class="preset" type="button" data-preset="transfer" aria-pressed="false">文件传输<span>较高负载</span></button>
+        <button class="preset" type="button" data-preset="pressure" aria-pressed="false">内存紧张<span>剩余较少</span></button>
+      </div>
+      <label class="simulation"><input id="auto" type="checkbox" checked>每 2 秒模拟刷新</label>
+      <div class="notes">
+        <p><strong>黑色前景＝当前值 / 已用</strong><br>浅灰底条＝频率上限 / 总容量。</p>
+        <p>CPU 使用率按双核平均展示。SRAM、PSRAM 统计可分配堆，显示已用和可用。</p>
+        <p>Flash 占用包含主固件与系统保留分区；余量为主应用槽的升级空间，不含 SD 卡。</p>
+        <p><strong>所有运行数值均为模拟数据。</strong><br>本原型不连接设备，不修改固件。</p>
+      </div>
+      <p class="review">操作：应用页点击「系统」进入；页面内「返回」或底部「应用」回到入口，「刷新」立即更新一组样例数据。</p>
+    </aside>
+    <section class="preview" aria-label="Metalio 设备原型">
+      <p class="preview-label" id="screen-label">02 / 系统概览</p>
+      <div class="screen-frame">
+        <div class="screen" id="device" data-screen-label="系统概览">
+          <img class="reference" src="apps-reference.png" width="684" height="1216" alt="">
+          <div class="clock" id="clock">11-14 10:24</div>
+          <section class="launcher" id="launcher" hidden aria-label="应用页">
+            <button class="system-tile" type="button" id="open-system" aria-label="打开系统应用">
+              <svg viewBox="0 0 108 108" fill="none" aria-hidden="true">
+                <rect x="1" y="1" width="106" height="106" rx="20" stroke="currentColor" stroke-width="2"></rect>
+                <rect x="35" y="35" width="38" height="38" rx="2" stroke="currentColor" stroke-width="3"></rect>
+                <rect x="44" y="44" width="20" height="20" stroke="currentColor" stroke-width="3"></rect>
+                <path d="M43 25V35M54 25V35M65 25V35M43 73V83M54 73V83M65 73V83M25 43H35M25 54H35M25 65H35M73 43H83M73 54H83M73 65H83" stroke="currentColor" stroke-width="3"></path>
+              </svg>
+              <span>系统</span>
+            </button>
+          </section>
+          <section class="system-page" id="system-page" aria-label="系统监控">
+            <header class="system-header">
+              <button class="back" id="back" type="button"><svg viewBox="0 0 18 30" fill="none" aria-hidden="true"><path d="M15 3L3 15L15 27" stroke="currentColor" stroke-width="2.5"></path></svg>返回</button>
+              <h2>系统</h2>
+              <button class="refresh" id="refresh" type="button">刷新</button>
+            </header>
+            <div class="live-status"><span><i></i><span id="live-label">实时监控 · 每 2 秒更新</span></span><time id="updated">10:24:00 更新</time></div>
+            <div class="metrics">
+              <article class="metric">
+                <div class="metric-heading"><h3>CPU 频率</h3><span class="metric-value" id="frequency-value">320 MHz</span></div>
+                <div class="meter" id="frequency-meter" role="meter" aria-label="CPU 当前频率" aria-valuemin="0" aria-valuemax="320" aria-valuenow="320"><div class="fill" id="frequency-fill" style="--used:100%"></div></div>
+                <div class="metric-meta"><span>0 MHz</span><span class="remaining">频率上限 320 MHz</span></div>
+              </article>
+              <article class="metric">
+                <div class="metric-heading"><h3>CPU 使用率</h3><span class="metric-value" id="cpu-value">24%</span></div>
+                <div class="meter" id="cpu-meter" role="meter" aria-label="CPU 双核平均使用率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="24"><div class="fill" id="cpu-fill" style="--used:24%"></div></div>
+                <div class="metric-meta"><span>双核平均</span><span class="remaining" id="cpu-free">空闲 76%</span></div>
+              </article>
+              <article class="metric">
+                <div class="metric-heading"><h3>SRAM<small>384 KiB</small></h3><span class="metric-value" id="sram-value">61%</span></div>
+                <div class="meter" id="sram-meter" role="meter" aria-label="内部 SRAM 堆已用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="61"><div class="fill" id="sram-fill" style="--used:61%"></div></div>
+                <div class="metric-meta"><span id="sram-used">已用 234 KiB</span><span class="remaining" id="sram-free">可用 150 KiB</span></div>
+              </article>
+              <article class="metric">
+                <div class="metric-heading"><h3>PSRAM<small>16 MiB</small></h3><span class="metric-value" id="psram-value">39%</span></div>
+                <div class="meter" id="psram-meter" role="meter" aria-label="外部 PSRAM 堆已用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="39"><div class="fill" id="psram-fill" style="--used:39%"></div></div>
+                <div class="metric-meta"><span id="psram-used">已用 6.20 MiB</span><span class="remaining" id="psram-free">可用 9.80 MiB</span></div>
+              </article>
+              <article class="metric">
+                <div class="metric-heading"><h3>Flash<small>16 MiB</small></h3><span class="metric-value" id="flash-value">73%</span></div>
+                <div class="meter" id="flash-meter" role="meter" aria-label="内部 Flash 固件与保留空间占用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="73"><div class="fill" id="flash-fill" style="--used:73.2%"></div></div>
+                <div class="metric-meta"><span>已占用 11.71 MiB</span><span class="remaining">余量 4.29 MiB</span></div>
+              </article>
+            </div>
+            <p class="system-footnote">内存为可分配堆 · Flash 不含 SD 卡</p>
+          </section>
+          <button class="apps-tab" id="apps-tab" type="button" aria-label="返回应用页"></button>
+        </div>
+      </div>
+      <p class="prototype-tag">UE 原型 · 可点击操作 · 数值为模拟数据</p>
+    </section>
+  </main>
+  <script>
+    const byId=id=>document.getElementById(id);
+    const exportScreen=new URLSearchParams(location.search).get('screen')==='1';
+    if(exportScreen)document.documentElement.classList.add('export-screen');
+    const profiles={reading:{freq:320,cpu:24,sram:234,psram:6.20},transfer:{freq:320,cpu:73,sram:291,psram:8.65},pressure:{freq:320,cpu:89,sram:365,psram:15.12}};
+    let currentView='system',preset='reading',ticks=0;
+    function scaleScreen(){if(exportScreen){document.documentElement.style.setProperty('--scale',1);return;}const preview=document.querySelector('.preview');const width=Math.min(preview.clientWidth-4,684);const height=window.innerWidth>800?window.innerHeight-110:Math.min(900,window.innerHeight*.88);const scale=Math.min(1,width/684,Math.max(450,height)/1216);document.documentElement.style.setProperty('--scale',scale);}
+    function timeParts(){const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).formatToParts(new Date());return Object.fromEntries(parts.map(x=>[x.type,x.value]));}
+    function clock(){const t=timeParts();byId('clock').textContent=`${t.month}-${t.day} ${t.hour}:${t.minute}`;return `${t.hour}:${t.minute}:${t.second}`;}
+    function meter(name,percent,value=percent){byId(name+'-fill').style.setProperty('--used',Math.max(0,Math.min(100,percent))+'%');byId(name+'-meter').setAttribute('aria-valuenow',value);}
+    function update(advance=false){const p=profiles[preset];if(advance)ticks++;const jitter=advance?[-1,2,0,-2,1][ticks%5]:0;const cpu=Math.max(0,Math.min(100,p.cpu+jitter));const sram=Math.min(384,Math.max(0,p.sram+jitter));const psram=Math.min(16,Math.max(0,p.psram+jitter*.03));
+      byId('frequency-value').textContent=p.freq+' MHz';meter('frequency',p.freq/320*100,p.freq);
+      byId('cpu-value').textContent=cpu+'%';byId('cpu-free').textContent='空闲 '+(100-cpu)+'%';meter('cpu',cpu);
+      const sramPercent=Math.round(sram/384*100);byId('sram-value').textContent=sramPercent+'%';byId('sram-used').textContent='已用 '+sram+' KiB';byId('sram-free').textContent='可用 '+(384-sram)+' KiB';meter('sram',sramPercent);
+      const psramPercent=Math.round(psram/16*100);byId('psram-value').textContent=psramPercent+'%';byId('psram-used').textContent='已用 '+psram.toFixed(2)+' MiB';byId('psram-free').textContent='可用 '+(16-psram).toFixed(2)+' MiB';meter('psram',psramPercent);
+      meter('flash',11.71/16*100,Math.round(11.71/16*100));byId('updated').textContent=clock()+' 更新';
+    }
+    function show(view){currentView=view;byId('launcher').hidden=view!=='apps';byId('system-page').hidden=view!=='system';document.querySelectorAll('[data-page]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.page===view));byId('screen-label').textContent=view==='apps'?'01 / 应用入口':'02 / 系统概览';byId('device').dataset.screenLabel=view==='apps'?'应用入口':'系统概览';history.replaceState(null,'','#'+view);if(view==='system')update(false);}
+    document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.page)));
+    document.querySelectorAll('[data-preset]').forEach(b=>b.addEventListener('click',()=>{preset=b.dataset.preset;ticks=0;document.querySelectorAll('[data-preset]').forEach(x=>x.setAttribute('aria-pressed',x===b));show('system');update(false);}));
+    byId('open-system').addEventListener('click',()=>show('system'));byId('back').addEventListener('click',()=>show('apps'));byId('apps-tab').addEventListener('click',()=>show('apps'));byId('refresh').addEventListener('click',()=>update(true));
+    byId('auto').addEventListener('change',()=>{byId('live-label').textContent=byId('auto').checked?'实时监控 · 每 2 秒更新':'已暂停 · 可点刷新查看';if(byId('auto').checked)update(true);});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')show('apps');});window.addEventListener('resize',scaleScreen);setInterval(()=>{clock();if(currentView==='system'&&byId('auto').checked&&!document.hidden)update(true);},2000);
+    scaleScreen();show(location.hash==='#apps'?'apps':'system');clock();
+  </script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+{
+  "system": "ThingsOS",
+  "status": "independent-reimplementation-in-progress",
+  "firmware_ready": false,
+  "application_root": "native",
+  "hardware_source": {
+    "root": "references/read-pico-official/components",
+    "upstream": "https://github.com/MindReset/read_pico_firmware",
+    "declared_commit": "ed1e9331077451a0391769cd6c191568f7901807",
+    "note": "Reference snapshot declaration; audit records actual content hashes. No legacy modified drivers."
+  },
+  "excluded_application_sources": [
+    "ThingsOS/main",
+    "ThingsOS/components",
+    "references/read-pico-reader",
+    "references/whiteos",
+    "references/whiteos-1.0.2"
+  ],
+  "generic_libraries": [],
+  "requirements": {
+    "layout": "prototypes/thingsOS-v3/ThingsOS-review.html",
+    "library": "combined-epub-txt-on-sd",
+    "builtin_font": "full 方正屏显雅宋.TTF",
+    "other_fonts": "/sdcard/fonts",
+    "builtin_example": "Example Test",
+    "example_writable": false,
+    "recovery": "dual-ota-plus-independent-rescue-and-rom-usb",
+    "vcom": "factory-read-only",
+    "images": "EPUB cover and inline images, grayscale, zoom/pan, exact return position, fallback/retry",
+    "prototype_sha256": "726babcecf152d7fee9c4267d0286e67164382013eb87c0a35b56c8661035dad"
+  },
+  "firmware_project": "native/firmware",
+  "build_dependency_policy": "ESP-IDF only at initial scaffold; no legacy applications or modified drivers",
+  "milestone": "v3-independent-scaffold-host-and-esp32s3-build-validated"
+}

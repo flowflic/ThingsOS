@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.22)
+set(metalio "${CMAKE_CURRENT_LIST_DIR}/../metalio/components")
+set(bsp "${CMAKE_CURRENT_LIST_DIR}/../../references/read-pico-official/components")
+set(EXTRA_COMPONENT_DIRS "../firmware/components/thingsos_board" "../firmware/components/thingsos_core"
+ "../firmware/components/thingsos_libs" "../firmware/components/thingsos_net"
+ "${metalio}/epdiy" "${metalio}/metalio_bsp" "${bsp}/e0470_epaper_waveform" "${bsp}/sc7a20h")
+set(SDKCONFIG_DEFAULTS "../firmware/sdkconfig.defaults;sdkconfig.defaults")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+idf_build_set_property(MINIMAL_BUILD ON)
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/../VERSION" THINGSOS_BASE_VERSION LIMIT_COUNT 1)
+set(PROJECT_VER "${THINGSOS_BASE_VERSION}")
+project(ThingsOS_rescue VERSION ${THINGSOS_BASE_VERSION})
+include("../scan_adapter.cmake")
+include("../waveform_workspace.cmake")
+include("../development_gate.cmake")

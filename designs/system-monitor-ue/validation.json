@@ -1,0 +1,41 @@
+{
+  "type": "interactive UE prototype only",
+  "firmware_modified": false,
+  "firmware_built": false,
+  "device_accessed": false,
+  "mock_values": true,
+  "metrics": [
+    "CPU frequency",
+    "CPU utilization (two-core average)",
+    "SRAM heap",
+    "PSRAM heap",
+    "Flash occupied / upgrade headroom"
+  ],
+  "native_screen": [
+    684,
+    1216
+  ],
+  "launcher_entry": "third row, left",
+  "verified_interactions": [
+    "open system app",
+    "return to launcher",
+    "manual refresh",
+    "automatic mock updates",
+    "high-memory scenario"
+  ],
+  "console_errors": [],
+  "screenshots": {
+    "apps-entry.png": [
+      684,
+      1216
+    ],
+    "system-monitor.png": [
+      684,
+      1216
+    ]
+  },
+  "review_status": "needs-review",
+  "url": "http://127.0.0.1:4311/system-monitor-ue/System%20Monitor%20UE.html#system",
+  "source_sha256": "b50ff0ba980074b3b3cf8fe73d6aa395223544f6cc9864fd1aa533c9c2dbf88b",
+  "existing_candidate_unchanged": "724e2282df1df1a5d849334b4a47ad674467d8dfc5ed8a4f030fd7a8e5bcf7c3"
+}

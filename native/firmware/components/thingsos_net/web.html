@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ThingsOS · 本地设备管理</title>
+<style>
+*{box-sizing:border-box}body{max-width:880px;margin:32px auto;padding:0 24px;font:16px/1.7 system-ui;color:#111;background:#f7f6f2}header{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid;padding-bottom:18px}header strong{font-size:28px}nav{display:flex;gap:8px}button,input,select{font:inherit;padding:10px;max-width:100%}button{cursor:pointer;background:white;border:1px solid #777}button.selected,button.primary{background:#111;color:white}button:disabled{opacity:.5;cursor:default}section{border:1px solid #ccc;background:white;padding:24px;margin:20px 0}label{display:block;margin:12px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}.row{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid #ddd}.row small{display:block;color:#666}.actions{display:flex;gap:12px;flex-wrap:wrap}progress{width:100%}[hidden]{display:none!important}h1{font-size:34px;line-height:1.3}.note{color:#555}#token{width:360px}.check{display:flex;align-items:flex-start;gap:10px}.check input{margin-top:8px}
+</style>
+<style>
+/* Device management: readable controls at phone widths, no external assets. */
+body{padding:0 24px;font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;line-height:1.6}
+header{gap:24px}header strong{flex:none;line-height:1.2}nav{min-width:0}nav button{white-space:nowrap;min-height:44px}
+button{min-height:44px;line-height:1.4;border-radius:6px;padding:10px 14px}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #111;outline-offset:3px}
+section{border-radius:8px}h1{margin:24px 0 12px;font-size:30px}h2{font-size:22px;line-height:1.4;margin:0 0 18px}p{overflow-wrap:anywhere}
+label input:not([type=checkbox]),label select{display:block;width:100%;margin-top:6px;min-width:0;min-height:46px;border:1px solid #999;border-radius:6px;background:#fff;color:#111}
+input[type=file]{display:block;width:100%;min-width:0;margin:18px 0;font-size:14px;border:1px dashed #aaa;border-radius:6px;padding:12px;background:#fafafa}
+input[type=file]::file-selector-button{font:inherit;margin-right:10px;border:1px solid #777;border-radius:4px;background:#fff;padding:8px 10px;cursor:pointer}
+.actions{gap:10px;margin:14px 0}.upload-actions{display:grid;grid-template-columns:1fr 1fr}.manage-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid #ddd;padding-top:16px;margin-top:20px}.actions button{min-width:0}
+.row{gap:12px;justify-content:flex-start;padding:18px 0}.row .file-description{flex:1;min-width:0;overflow-wrap:anywhere;line-height:1.5}.row small{font-size:13px;margin-top:6px;line-height:1.5}.row input[type=checkbox]{flex:none;width:22px;height:22px;margin:0;accent-color:#111}.row button{flex:none;white-space:nowrap}.file-actions{display:flex;gap:6px;flex-wrap:wrap}.preview-body{white-space:pre-wrap;line-height:1.9;font-size:17px}#preview{width:min(800px,calc(100% - 32px))}#preview-image{display:block;max-width:100%;max-height:65vh;margin:auto;object-fit:contain}#preview .actions{display:flex;justify-content:space-between}.browser-actions{display:flex;gap:8px;flex-wrap:wrap}.row .file-selection{flex:none;display:flex;align-items:center;justify-content:center;width:36px;min-height:44px;margin:0;cursor:pointer}
+#feedback{margin:16px 0}#feedback progress{display:block}#feedback pre{margin:10px 0 0}
+#state{font-size:14px;color:#555;padding:12px 0;margin:0;border-bottom:1px solid #ddd}#directory{font-size:14px;color:#555}#items{margin-top:18px}#token{width:100%}.check{gap:12px}.check input{flex:none;width:20px;height:20px;padding:0}
+dialog{width:min(440px,calc(100% - 32px));max-height:calc(100% - 32px);overflow:auto;border:1px solid #777;border-radius:8px;padding:24px}dialog::backdrop{background:#0006}dialog .actions{display:grid;grid-template-columns:1fr}
+@media(max-width:600px){
+ body{margin:20px auto;padding:0 16px;font-size:16px}
+ header{display:block;padding-bottom:16px}header strong{display:block;font-size:26px;margin-bottom:18px}
+ nav{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%}nav button{font-size:14px;padding:10px 4px}
+ h1{font-size:26px;line-height:1.3;margin-top:22px}section{padding:18px;margin:20px 0}h2{font-size:21px}
+ .note{font-size:14px;line-height:1.65}.actions button{font-size:14px;padding:11px 8px}.manage-actions{gap:8px}
+ #install,#cancel,#inspect,#rom,#abort-upload{width:100%;margin:6px 0}pre{font-size:14px}ol{padding-left:22px}
+}
+@media(max-width:359px){section{padding:14px}.manage-actions{grid-template-columns:1fr 1fr}.manage-actions #delete{grid-column:1/-1}nav button{font-size:13px}.row{gap:8px}}
+@media(max-width:600px){.row{flex-wrap:wrap}.file-actions{width:100%;padding-left:34px}.file-actions button{flex:1}.file-description{min-width:160px}}
+</style>
+<header><strong>ThingsOS</strong><nav><button data-tab="books" class="selected">文件传输</button><button data-tab="ota">固件升级</button><button data-tab="usb">USB 线刷</button></nav></header>
+<section id="auth" hidden><label>独立救援访问码 <input id="token" type="password" maxlength="32" autocomplete="off"></label><button id="connect">连接设备</button></section><p id="state" role="status">正在连接设备…</p>
+<main id="books"><h1>向 ThingsOS 传输文件</h1><p class="note">浏览 SD 卡目录，预览与管理书籍和图片。系统文件和其他受保护内容只读。</p>
+<section id="files"><h2>上传文件</h2><label>目标 <select id="kind"><option value="books">书库 · EPUB / TXT / Markdown / 封面</option><option value="music">音乐 · MP3 / WAV</option><option value="fonts">字体 · TTF</option><option value="wallpapers">壁纸图片 · PNG / JPG / WebP</option></select></label><p id="directory">连接后显示目标目录</p><div class="browser-actions"><button id="sd-root">SD 卡根目录</button><button id="parent">上一级</button></div><p class="note">壁纸按方向完整保留宽度：竖图适配 684×1216，横图适配 1216×684；较矮图片上下补白，长图仅裁上下；透明背景补白。其他图片转灰度并居中裁剪：竖图 684×1216，横图 1216×684。</p><input id="file" type="file" accept=".epub,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp" aria-label="选择要上传的书籍、音乐、字体或图片"><div class="actions upload-actions"><button id="upload" class="primary">开始上传</button><button id="list">刷新目录</button></div><div id="upload-feedback"><div id="feedback"><button id="abort-upload" hidden>取消上传</button>
+<progress id="progress" value="0" max="100" aria-label="上传进度"></progress><pre id="result" role="status">等待操作</pre></div></div><div class="actions manage-actions"><button id="select-all">全选 / 清空</button><button id="rename">重命名</button><button id="delete">删除所选</button></div><div id="items"></div><button id="more-files" hidden>加载更多文件</button>
+<dialog id="collision"><h2>同名文件已存在</h2><p>选择保留两份，或确认替换已有文件。</p><div class="actions"><button data-collision="cancel">取消上传</button><button data-collision="both">保留两份</button><button data-collision="replace">覆盖</button></div></dialog></section>
+</main>
+<main id="ota" hidden><h1 id="ota-title">升级设备固件</h1><p id="ota-flow">先检查应用包并上传到 SD 卡，设备会进入独立救援程序安装，随后返回书库。启动健康检查通过后才算完成。</p>
+<section><h2>1. 选择并检查应用包</h2><p class="note">Metalio E-Ink4-Plus / ESP32-S31 · ThingsOS_native 应用 .bin，最大 10.875 MiB。完整 USB 镜像不能用于 OTA。</p><input id="firmware" type="file" accept=".bin"><button id="inspect">检查固件</button><pre id="inspection">尚未检查</pre>
+<div id="install-panel" hidden><h2>2. 确认升级</h2><p>已检查文件头、芯片、项目、容量及 SHA-256。设备会再次校验，并由救援程序安装及验证主应用。</p><label class="check"><input id="consent" type="checkbox"><span id="ota-consent">我确认使用匹配设备的应用包，并保持稳定供电及 SD 卡插入。</span></label><button id="install" class="primary">开始升级并重启</button><button id="cancel">取消</button></div><div id="ota-feedback"></div></section>
+<section><h2>恢复策略</h2><p id="ota-recovery">上传或校验失败时原主程序保留。安装中断时设备留在独立救援；本机只有一个主应用槽，无法自动回退到旧版。用户书籍保留在 SD 卡。</p><button id="rom" hidden>进入 ROM USB 下载模式</button></section></main>
+<main id="usb" hidden><h1>通过 USB 安装 ThingsOS</h1><section><h2>完整安装或恢复</h2><ol><li>备份内部设置，保留 SD 卡书籍。</li><li>用 USB 数据线连接 Metalio E-Ink4-Plus，打开本地 ThingsOS USB 安装包中的安装页面。</li><li>核对版本、清单与 SHA-256，选择串口后确认完整安装。</li></ol><p>设备无法启动时，在设备“设置 → 恢复”进入 ROM 下载模式，或使用官方硬件下载操作。</p><p class="note">完整安装替换设备分区与内部设置；日常升级请使用 OTA 应用包。</p><div id="usb-feedback"></div></section></main>
+<section aria-label="诊断日志"><h2>日志与异常诊断</h2><p id="diagnostic-reason"></p><p>启动历史、最近事件及错误码；不含账号凭据、书名或正文。</p><button id="download-diagnostics">下载诊断包</button><p id="diagnostic-result" role="status"></p></section>
+<dialog id="preview"><h2 id="preview-title"></h2><p id="preview-info" role="status"></p><img id="preview-image" alt="图片预览" hidden><pre id="preview-text" class="preview-body" hidden></pre><div class="actions"><button id="preview-prev">上一页</button><button id="preview-next">下一页</button><button id="preview-close">关闭预览</button></div></dialog>
+<script src="/image.js"></script><script src="/sha256.js"></script><script>
+const $=id=>document.getElementById(id);let active=false,prepared=null,state=null,currentXHR=null,selected=new Set(),fileItems=[],pendingHealth=null,pendingHealthAt=0,pendingBefore=null,healthChecking=false,currentDirectory=null,previewFile=null,previewPage=null,previewHistory=[],previewURL=null,previewSequence=0,listNext=0;
+try{const pending=JSON.parse(localStorage.getItem('thingsos.pending-update')||'null');if(pending){pendingHealth=pending.elf;pendingHealthAt=pending.at;pendingBefore=pending.before||null}}catch{}
+function rememberHealth(elf,before){pendingHealth=elf;pendingBefore=before||null;pendingHealthAt=Date.now();try{localStorage.setItem('thingsos.pending-update',JSON.stringify({elf,before:pendingBefore,at:pendingHealthAt}))}catch{}}
+function clearHealth(){pendingHealth=pendingBefore=null;try{localStorage.removeItem('thingsos.pending-update')}catch{}}
+const token=()=>$('token').value.trim();function say(text){$('result').textContent=text}
+function busy(on){active=on;document.querySelectorAll('button,input,select').forEach(b=>b.disabled=on && b.id!=="abort-upload" && !b.dataset.collision)}
+function tab(name){for(const id of ['books','ota','usb'])$(id).hidden=id!==name;$(name==='books'?'upload-feedback':name+'-feedback').append($('feedback'));document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.tab===name))}
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
+async function api(path,options={}){const response=await fetch(path,{...options,headers:{...(token()?{'X-ThingsOS-Token':token()}:{}),...(options.headers||{})}});if(!response.ok){if(response.status===401){$('auth').hidden=false;$('state').textContent='独立救援需要设备显示的访问码'}throw Error(await response.text())}return response}
+$('download-diagnostics').onclick=async()=>{if(active)return;const button=$('download-diagnostics');button.disabled=true;let url;try{const response=await api('/api/diagnostics');const blob=await response.blob();url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='ThingsOS-diagnostics.json';document.body.append(link);link.click();link.remove();$('diagnostic-result').textContent='诊断包已下载，请连同异常发生时间和操作步骤一起提供。'}catch(e){$('diagnostic-result').textContent=e.message}finally{button.disabled=false;if(url)setTimeout(()=>URL.revokeObjectURL(url),1000)}};
+function target(){if($('kind').value==='music')return '/sdcard/music';return currentDirectory||($('kind').value==='fonts'?'/sdcard/fonts':$('kind').value==='wallpapers'?'/sdcard/wallpapers':state?.library||'/sdcard/books')}
+function directory(){const music=$('kind').value==='music';$('directory').textContent=(music?'保存至：':'当前目录：')+target()+(state?.sd?' · SD 已挂载':' · SD 未挂载');$('sd-root').hidden=$('parent').hidden=music;}
+$('connect').onclick=async()=>{try{state=await(await api('/api/status')).json();$('diagnostic-reason').textContent=state.rescue?'急救原因：'+(state.rescue_reason||'旧固件未记录'):'';$('state').textContent=`ThingsOS ${state.version||''} · ${state.rescue?'独立救援':state.wifi?'WiFi 已连接':'设备热点'} · ${state.sd?'SD 已挂载':'SD 未挂载'}`;$('auth').hidden=!state.rescue;$('files').hidden=state.rescue;$('rom').hidden=!state.rescue;$('ota-title').textContent=state.rescue?'独立救援 · 重新安装可用固件':'升级设备固件';$('ota-flow').textContent=state.rescue?'救援程序直接安装并验证主应用，然后重启。目标固件通过启动健康检查后才算完成。':'先检查应用包并上传到 SD 卡，设备会进入独立救援程序安装，随后返回书库。启动健康检查通过后才算完成。';$('ota-consent').textContent=state.rescue?'我确认使用匹配设备的应用包，并保持稳定供电。':'我确认使用匹配设备的应用包，并保持稳定供电及 SD 卡插入。';$('ota-recovery').textContent=state.rescue?'写入失败时设备留在独立救援，可重新安装；本机只有一个主应用槽，无法自动回退到旧版。':'上传或校验失败时原主程序保留。安装中断时设备留在独立救援；本机只有一个主应用槽，无法自动回退到旧版。用户书籍保留在 SD 卡。';if(state.rescue)tab('ota');directory();if(!state.rescue){fileItems=await readList($('kind').value);selected.clear();renderFiles()}if(pendingHealth) await healthCheck()}catch(e){say(e.message)}};
+async function healthCheck(){
+ if(healthChecking||!pendingHealth)return;healthChecking=true;const expected=pendingHealth,deadline=Date.now()+180000;
+ try{
+  while(pendingHealth===expected && Date.now()<deadline){
+   const controller=typeof AbortController==='function'?new AbortController():null;
+   const timer=controller?setTimeout(()=>controller.abort(),4000):null;
+   try{
+    const current=await(await api('/api/status',controller?{signal:controller.signal}:{})).json();
+    if(current.elf===expected && current.healthy){say(pendingBefore && pendingBefore!==expected?'目标固件已启动，健康检查通过，升级完成。内部版本号可能保持不变。':'设备当前运行目标固件且健康检查通过；升级前指纹相同或未知，无法仅凭指纹确认是否重新安装。');clearHealth();return}
+    say(current.elf===expected?'目标固件已启动，等待健康检查…':'等待设备安装并重启；返回书库后请打开传书页面以确认。');
+   }catch{say('等待设备网络恢复；返回书库后请打开传书页面以确认。')}
+   finally{if(timer!==null)clearTimeout(timer)}
+   await new Promise(r=>setTimeout(r,1500));
+  }
+  if(pendingHealth===expected)say('暂时无法确认启动健康。请打开设备传书页面并重新连接，确认前不要重复升级。');
+ }finally{healthChecking=false}
+}
+$('rom').onclick=async()=>{if(!confirm('确认进入 ROM USB 下载模式？此后需要电脑 USB 线刷。'))return;try{say(await(await api('/api/rom',{method:'POST',headers:{'X-ThingsOS-Confirm':'ROM-USB'}})).text())}catch(e){say(e.message)}};
+function category(){currentDirectory=null;directory();$('file').value='';$('file').accept=$('kind').value==='music'?'.mp3,.wav':$('kind').value==='fonts'?'.ttf':$('kind').value==='wallpapers'?'.png,.jpg,.jpeg,.webp':'.epub,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp';}
+$('kind').onchange=async()=>{category();selected.clear();fileItems=[];listNext=0;$('more-files').hidden=true;$('items').replaceChildren();try{await refreshFiles()}catch(e){say(e.message)}};
+function fileQuery(name,folder=target(),kind=$('kind').value){return 'kind='+encodeURIComponent(kind)+'&directory='+encodeURIComponent(folder)+(name===undefined?'':'&name='+encodeURIComponent(name))}
+async function readList(kind,more=false){const path='/api/list?kind='+kind+(currentDirectory?'&directory='+encodeURIComponent(currentDirectory):'')+(more?'&offset='+listNext:'');const response=await api(path);const directoryHeader=response.headers?.get('X-ThingsOS-Directory'),cardHeader=response.headers?.get('X-ThingsOS-Card');if(directoryHeader && cardHeader){state=state||{};currentDirectory=decodeURIComponent(directoryHeader);state.card=cardHeader;directory()}listNext=Number(response.headers?.get('X-ThingsOS-Next')||0);$('more-files').hidden=!listNext;return response.json()}
+function canManage(item){return !item.readonly && !item.directory && /\.(epub|txt|md|markdown|png|jpe?g|webp)$/i.test(item.name)}
+function action(label,fn){const b=document.createElement('button');b.textContent=label;b.onclick=fn;return b}
+function renderFiles(){ $('items').replaceChildren();const items=[...fileItems].sort((a,b)=>Number(!!b.directory)-Number(!!a.directory)||a.name.localeCompare(b.name,'zh-CN'));for(const item of items){const row=document.createElement('div');row.className='row';const text=document.createElement('div');text.className='file-description';text.textContent=item.name;const hint=document.createElement('small');hint.textContent=item.directory?(item.locked?'系统目录 · 受保护':'文件夹'):item.readonly?'只读文件':Math.ceil((item.bytes||0)/1024)+' KB';text.append(hint);row.append(text);const actions=document.createElement('div');actions.className='file-actions';if(item.directory && !item.locked)actions.append(action('打开',()=>browse(target()+'/'+item.name)));if(!item.directory && (item.content!==undefined || canManage(item)))actions.append(action('预览',()=>openPreview(item)));if(canManage(item)){const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(item.name);check.setAttribute('aria-label','选择 '+item.name);check.onchange=()=>check.checked?selected.add(item.name):selected.delete(item.name);const selection=document.createElement('label');selection.className='file-selection';selection.append(check);row.prepend(selection);actions.append(action('重命名',()=>manage(true,[item.name])),action('删除',()=>manage(false,[item.name])))}row.append(actions);$('items').append(row)}}
+async function browse(folder){if(active)return;busy(true);const before=currentDirectory;currentDirectory=folder;try{await refreshFiles()}catch(e){currentDirectory=before;directory();say(e.message)}finally{busy(false)}}
+async function refreshFiles(){fileItems=await readList($('kind').value);selected.clear();directory();renderFiles()}
+$('list').onclick=async()=>{if(active)return;busy(true);try{await refreshFiles()}catch(e){say(e.message)}finally{busy(false)}};
+$('more-files').onclick=async()=>{try{fileItems.push(...await readList($('kind').value,true));renderFiles()}catch(e){say(e.message)}};
+$('sd-root').onclick=()=>browse('/sdcard');$('parent').onclick=()=>{const folder=target();if(folder!='/sdcard')browse(folder.slice(0,folder.lastIndexOf('/'))||'/sdcard')};
+$('select-all').onclick=()=>{const names=fileItems.filter(canManage).map(i=>i.name);selected=selected.size===names.length?new Set():new Set(names);renderFiles()};
+function releasePreview(){++previewSequence;if(previewURL){URL.revokeObjectURL(previewURL);previewURL=null}$('preview-image').removeAttribute('src');previewFile=null;previewPage=null;previewHistory=[]}
+$('preview-image').onerror=()=>{$('preview-info').textContent='图片无法解码，请检查图片文件'};
+$('preview-close').onclick=()=>{$('preview').close();releasePreview()};$('preview').onclose=releasePreview;
+async function openPreview(item){releasePreview();previewFile={item,folder:target(),kind:$('kind').value};$('preview-title').textContent=item.name;$('preview-info').textContent='正在读取…';$('preview-text').hidden=true;$('preview-image').hidden=true;$('preview-prev').hidden=true;$('preview-next').hidden=true;$('preview').showModal();const sequence=previewSequence;try{if(item.content!==undefined){$('preview-text').textContent=item.content;$('preview-text').hidden=false;$('preview-info').textContent='';return}if(/\.(png|jpe?g|webp)$/i.test(item.name)){const response=await api('/api/preview?'+fileQuery(item.name));const blob=await response.blob();if(sequence!==previewSequence)return;previewURL=URL.createObjectURL(blob);$('preview-image').src=previewURL;$('preview-image').hidden=false;$('preview-info').textContent='';return}await loadPreview(0,0)}catch(e){if(sequence===previewSequence)$('preview-info').textContent=e.message}}
+async function loadPreview(chapter,offset){const sequence=previewSequence;const file=previewFile;if(!file)return;const previous=previewPage;$('preview-info').textContent='正在读取…';try{const data=await(await api('/api/preview?'+fileQuery(file.item.name,file.folder,file.kind)+'&chapter='+chapter+'&offset='+offset)).json();if(sequence!==previewSequence)return;previewPage=data;$('preview-text').textContent=data.text.trim()?data.text:'此页没有文字（封面或图片页），请点击下一页继续。';$('preview-text').hidden=false;$('preview-info').textContent=(data.title||file.item.name)+' · 第 '+(data.chapter+1)+' / '+data.chapters+' 章';$('preview-prev').hidden=false;$('preview-next').hidden=false;$('preview-prev').disabled=!previewHistory.length;$('preview-next').disabled=!(data.next || data.chapter+1<data.chapters)}catch(e){if(sequence===previewSequence){previewPage=previous;$('preview-info').textContent=e.message}}}
+$('preview-next').onclick=()=>{if(!previewPage)return;previewHistory.push({chapter:previewPage.chapter,offset:previewPage.offset});return previewPage.next?loadPreview(previewPage.chapter,previewPage.next):loadPreview(previewPage.chapter+1,0)};
+$('preview-prev').onclick=()=>{const previous=previewHistory.pop();if(previous)return loadPreview(previous.chapter,previous.offset)};
+async function manage(rename,chosen){
+ if(active)return;if(!state?.card)return say('请先连接设备并刷新文件目录');
+ const names=chosen||[...selected],folder=target(),card=state.card;
+ if(!names.length)return say('请先选择书籍或图片');
+ if(rename && names.length!==1)return say('重命名时请选择一个文件');
+ let name;
+ if(rename){name=prompt('新的文件名（保留原扩展名）',names[0]);if(name===null)return;if(!name.trim())return say('名称不能为空')}
+ else if(!confirm('删除这 '+names.length+' 个文件？\n'+names.join('\n')+(names.some(n=>/\.(epub|txt|md|markdown)$/i.test(n))?'\n历史阅读时长将保留。':'')))return;
+ let done=0,failed=0;busy(true);
+ try{
+  for(let offset=0;offset<names.length;offset+=64){
+   const batch=names.slice(offset,offset+64);
+   const job=await(await api('/api/manage',{method:'POST',headers:{'Content-Type':'application/json','X-ThingsOS-Confirm':'MANAGE'},body:JSON.stringify({names:batch,directory:folder,card,...(rename?{rename:name}:{})})})).json();
+   say('设备正在处理文件… '+Math.min(offset+64,names.length)+' / '+names.length);let result;
+   for(let i=0;i<90;i++){await new Promise(r=>setTimeout(r,1000));result=await(await api('/api/status')).json();if(result.job===job.job && !result.job_pending)break}
+   if(result?.job!==job.job || result.job_pending)throw Error('操作仍待确认，请刷新设备状态，勿重复提交');
+   done+=result.job_done;failed+=result.job_failed;
+  }
+  await refreshFiles();say('完成 '+done+' 项 · 失败 '+failed+' 项');
+ }catch(e){say('已完成 '+done+' 项 · '+e.message)}finally{busy(false)}
+}
+$('rename').onclick=()=>manage(true);$('delete').onclick=()=>manage(false);
+
+function send(path,file,extra={}){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();currentXHR=xhr;$('progress').value=0;xhr.open('POST',path);if(token())xhr.setRequestHeader('X-ThingsOS-Token',token());xhr.setRequestHeader('Content-Type','application/octet-stream');for(const [k,v]of Object.entries(extra))xhr.setRequestHeader(k,v);xhr.upload.onprogress=e=>{if(e.lengthComputable&&e.total>0){const percent=Math.min(100,Math.floor(e.loaded/e.total*100));$('progress').value=percent;if(path==='/api/ota'&&e.loaded===e.total)say('浏览器已发送文件，等待设备校验并处理固件…');else if(path.startsWith('/api/upload?'))say(percent===100?'手机已发送文件，等待设备保存结果…':'正在发送文件 '+percent+'%（手机发送进度）')}};xhr.onload=()=>xhr.status>=200&&xhr.status<300?resolve(xhr.responseText):reject(Object.assign(Error(xhr.responseText),{status:xhr.status}));xhr.onabort=()=>reject(Error("已取消上传；请刷新目录核对最终文件是否已提交"));xhr.onerror=()=>reject(Error('连接中断。检查设备状态后重试；上传进度不代表固件已验证。'));xhr.timeout=600000;xhr.ontimeout=xhr.onerror;xhr.send(file)})}
+function chooseCollision(){return new Promise(resolve=>{const dialog=$('collision');dialog.querySelectorAll('[data-collision]').forEach(b=>b.onclick=()=>{dialog.close();resolve(b.dataset.collision)});dialog.oncancel=e=>{e.preventDefault();dialog.close();resolve('cancel')};dialog.showModal()})}
+$('abort-upload').onclick=()=>currentXHR?.abort();
+$('upload').onclick=async()=>{if(active)return;const original=$('file').files[0];if(!original)return say('先选择文件');if($('kind').value==='music'&&!/\.(mp3|wav)$/i.test(original.name))return say('音乐仅支持 MP3 / WAV');busy(true);$('progress').value=0;$('abort-upload').hidden=true;try{say('正在准备上传文件…');const preparedImage=await thingsos_prepare_image(original,$('kind').value==='wallpapers'||/^\/sdcard\/wallpapers(?:\/|$)/.test(target())),file=preparedImage.file;const path='/api/upload?'+fileQuery(file.name),extra={};if(fileItems.some(item=>typeof item.name==='string'&&item.name.toLowerCase()===file.name.toLowerCase())){say('存在同名文件，请先选择处理方式');const choice=await chooseCollision();if(choice==='cancel')return say('已取消，原文件保留');extra['X-ThingsOS-Collision']=choice}$('abort-upload').hidden=false;say('正在发送文件…');let response;try{response=await send(path,file,extra)}catch(e){if(e.status!==409)throw e;$('abort-upload').hidden=true;say('目录中出现同名文件，请选择处理方式');const choice=await chooseCollision();if(choice==='cancel')return say('已取消，原文件保留');$('abort-upload').hidden=false;say('正在发送文件…');response=await send(path,file,{'X-ThingsOS-Collision':choice})}say(response+(preparedImage.info?'\n'+preparedImage.info:''))}catch(e){say(e.message)}finally{currentXHR=null;$('abort-upload').hidden=true;busy(false)}};
+
+async function hash(file){const bytes=await file.arrayBuffer();if(globalThis.crypto&&crypto.subtle){const digest=await crypto.subtle.digest('SHA-256',bytes);return Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')}return thingsos_sha256(bytes)}
+function reset(){prepared=null;$('consent').checked=false;$('install-panel').hidden=true;$('inspection').textContent='尚未检查'}
+$('firmware').onchange=reset;$('cancel').onclick=reset;
+$('inspect').onclick=async()=>{const file=$('firmware').files[0];reset();if(!file)return say('先选择应用 .bin');busy(true);try{const info=thingsos_firmware_header(await file.slice(0,288).arrayBuffer(),file.size);const digest=await hash(file);prepared={file,digest,elf:info.elf};$('inspection').textContent=`项目：${info.project}\n芯片：ESP32-S31\n版本：${info.version}\n固件标识：${info.elf}\n大小：${file.size} 字节\nSHA-256：${digest}`;$('install-panel').hidden=false;say('文件检查通过，等待确认')}catch(e){$('inspection').textContent='检查失败：'+e.message;say(e.message)}finally{busy(false)}};
+$('install').onclick=async()=>{if(active||healthChecking)return;if(!prepared||!$('consent').checked)return say('先检查文件并确认升级');const candidate=prepared;let checking=false;busy(true);try{state=await(await api('/api/status')).json();const before=state.elf||null;say(state.rescue?'救援程序正在接收固件…':'正在上传固件到设备 SD 卡…');await send('/api/ota',candidate.file,{'X-ThingsOS-SHA256':candidate.digest});reset();rememberHealth(candidate.elf,before);checking=true;say(state.rescue?'主应用已验证，设备将重启；返回书库后请打开传书页面确认。':'SD 校验通过，设备将进入救援程序安装；返回书库后请打开传书页面确认。')}catch(e){say(e.message)}finally{currentXHR=null;busy(false)}if(checking)await healthCheck()};
+const initialKind=new URLSearchParams(location.search).get('kind');if(['books','music','fonts','wallpapers'].includes(initialKind))$('kind').value=initialKind;category();
+$('connect').onclick();
+window.addEventListener('beforeunload',e=>{if(active){e.preventDefault();e.returnValue=''}});
+</script></html>
