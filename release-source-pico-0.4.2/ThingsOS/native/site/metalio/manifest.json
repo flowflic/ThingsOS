@@ -1,0 +1,30 @@
+{
+  "name": "ThingsOS Metalio",
+  "version": "0.1.3",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S31",
+      "parts": [
+        {
+          "path": "firmware/metalio/ThingsOS-metalio-0.1.3-usb.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ],
+  "downloads": [
+    {
+      "kind": "usb",
+      "path": "firmware/metalio/ThingsOS-metalio-0.1.3-usb.bin",
+      "size": 16610104,
+      "sha256": "98acc131d5a1d1ab97a0a62917d7ba702ee493fa04f2b333378436fbbfef0380"
+    },
+    {
+      "kind": "ota",
+      "path": "firmware/metalio/ThingsOS-metalio-0.1.3-ota.bin",
+      "size": 6512144,
+      "sha256": "5a2180ea92436eab5ee73ee4d90698d374a57b2e6b0ada17b0a37420fc192fa8"
+    }
+  ]
+}

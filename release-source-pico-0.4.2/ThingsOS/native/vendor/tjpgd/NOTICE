@@ -1,0 +1,4 @@
+TJpgDec R0.03, Copyright (C) ChaN, 2021. License terms retained in tjpgd.c.
+Source: MindReset/read_pico_firmware, main/book/vendor/tjpgd.c and tjpgd.h.
+Decoder implementation unchanged. Header uses standard stdint.h on Windows.
+ThingsOS configuration selects grayscale output and block scaling.

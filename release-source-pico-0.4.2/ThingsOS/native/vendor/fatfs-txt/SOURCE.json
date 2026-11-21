@@ -1,0 +1,8 @@
+{
+  "source": "ESP-IDF v6.1 components/fatfs/src/ffunicode.c",
+  "source_sha256": "892b9a0f4e4c4c4525000dae8fac012c784f1183de53753632959a36b28bdfdf",
+  "extracted_symbol": "oem2uni936",
+  "changes": "Dense 126x190 table; single-byte 0x80 Euro handled by decoder; copyright and original license retained.",
+  "local_idf_checkout_head": "fff9895c82d744c7237be8847347bdd1b07c6643",
+  "upstream": "https://github.com/espressif/esp-idf/blob/fff9895c82d744c7237be8847347bdd1b07c6643/components/fatfs/src/ffunicode.c"
+}

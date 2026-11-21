@@ -1,0 +1,10 @@
+{
+  "name": "ThingsOS Keyboard Sans Regular",
+  "source": "references/read-pico-official/sdcard/fonts/ChillDuanSansVF.ttf",
+  "source_commit": "ed1e9331077451a0391769cd6c191568f7901807",
+  "source_sha256": "966286fc44907d4123528e1efb98c08e51fff013cd083140fdad1bf6b593555c",
+  "sha256": "a50298a3c5bdf9281b9c2e0c1c82eeaaef12c7099813075ed5cc1982a8eeddf4",
+  "license": "SIL Open Font License 1.1",
+  "modifications": "Static weight 400; subset printable ASCII, all native Pinyin candidates and keyboard labels; renamed to avoid reserved names",
+  "generator": "native/prepare_keyboard_font.py; fontTools 4.56.0"
+}

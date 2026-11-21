@@ -1,0 +1,37 @@
+{
+  "system": "ThingsOS",
+  "target": "Read Pico RDP-G01-W / ESP32-S3",
+  "idf": "v6.1",
+  "official": {
+    "url": "https://github.com/MindReset/read_pico_firmware",
+    "commit": "ed1e9331077451a0391769cd6c191568f7901807"
+  },
+  "reader_reference": {
+    "url": "https://github.com/wegooo-cell/read-pico-reader",
+    "commit": "bb50077d51eb266e1add0cf050e79c2ac7ba95c6"
+  },
+  "crossmux": {
+    "url": "https://github.com/0x1abin/crossmux",
+    "commit": "1512e8e049f2b1a4efc7c004a5b1a93cbc5e3f9f",
+    "usage": "architecture and visual reference; no Arduino dependency"
+  },
+  "weidu_protocol_reference": {
+    "url": "https://github.com/0x1abin/crossmux",
+    "commit": "83b0f810c8628701456e028c2d8566a9be149755",
+    "usage": "Web wire-format and workflow reference; independently authored native C implementation"
+  },
+  "native_lcd_derivative": {
+    "source": "MindReset/read_pico_firmware@ed1e9331077451a0391769cd6c191568f7901807:components/epdiy/src/output_lcd/render_lcd.c",
+    "local": "native/firmware/components/thingsos_board/scan_adapter.c",
+    "license": "LGPL-3.0-or-later",
+    "changes": "Include paths, synchronous per-row phase LUT selection and SDK-owned DCache preload with bounded row-queue startup; official scan timing and reference checkout unchanged",
+    "details": "native/firmware/components/thingsos_board/scan_adapter.md"
+  },
+  "thumbnail_jpeg_decoder": {
+    "source": "MindReset/read_pico_firmware:main/book/vendor/tjpgd.c (TJpgDec R0.03, ChaN 2021)",
+    "local": "native/vendor/tjpgd",
+    "license": "ChaN permissive terms retained in tjpgd.c",
+    "decoder_sha256": "6ddab5ef63c60ac9290e355914ac8167ea9d6159a35c0301e753b68940b7c732",
+    "changes": "Decoder unchanged; portable stdint header and grayscale/block-scaling configuration"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "version": "0.4.2",
+  "target": "Read Pico RDP-G01-W / ESP32-S3",
+  "commit": "bd725027ead08ffba646c06ebecae31774b64c48",
+  "esp_idf_commit": "fff9895c82d744c7237be8847347bdd1b07c6643",
+  "read_pico_bsp_commit": "ed1e9331077451a0391769cd6c191568f7901807",
+  "build_instructions": "ThingsOS/native/README.md",
+  "firmware": {
+    "usb": {
+      "path": "firmware/ThingsOS-0.4.2-8d30b691c1dd-usb.bin",
+      "size": 16610104,
+      "sha256": "8d30b691c1dde4694c8ab124304755aeb0cdb5da9c4b361d0b5e70d5c307f0b1"
+    },
+    "ota": {
+      "path": "firmware/ThingsOS-0.4.2-60de20a75828-ota.bin",
+      "size": 6661120,
+      "sha256": "60de20a7582883197094e92b944a9471d4e9c32be200f96b66d0c5a46a2814b9"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema": 2,
+  "name": "ThingsOS Metalio",
+  "version": "0.1.3",
+  "project": "ThingsOS_native",
+  "board": "Metalio-E-Ink4-Plus",
+  "device": "Metalio E-Ink4-Plus",
+  "chip": "ESP32-S31",
+  "layout": "thingsos-metalio-single-v1",
+  "status": "release",
+  "firmware_ready": true,
+  "previous_version": "0.1.2",
+  "changes": [
+    "项目及默认主/救援固件版本统一更新为 0.1.3，纳入正式版 0.1.2 之后的现场修正。",
+    "校时：SNTP 同时使用 203.107.6.88、ntp.aliyun.com、cn.pool.ntp.org 三个服务器；NTP 未同步且系统时间未校准时改用 HTTP Date 兜底，并把来源与时间写入 NVS（thingsos-net），下次启动打印上次来源。",
+    "亮度：控制中心与前光灯页面按 1% 步进；音量仍为 5%，色温仍为 10%。",
+    "刷新：成功刷新后保持面板电源轨最长 3 秒，连续帧省去约 90 ms 上电时序；空闲计时器到期断电并做空闲校验，休眠路径立即断电。",
+    "微读：章节上下文预取任务的栈移入 PSRAM，空间不足时回退内部 RAM，腾出约 24 KB 内部 SRAM。",
+    "EPUB：mimetype 允许尾部 CR/LF/空格；清单与书脊上限 512 提高到 1024，可打开 500 个以上章节的合集。",
+    "书封：首次下载失败后间隔 30 秒重试，每本最多 3 次；成功后续传时重绘书架。",
+    "更新检查：改用 metalio/release.json，板型 Metalio-E-Ink4-Plus、布局 thingsos-metalio-single-v1；连接失败后静默重试一次（间隔 10 秒），两次都失败才提示。",
+    "正式固件移除仅供诊断的日志（ZIP/EPUB 失败日志、刷新相位日志），行为不变。"
+  ],
+  "packaged_at": "2026-11-01T05:57:32.480497+00:00",
+  "usb": {
+    "path": "firmware/metalio/ThingsOS-metalio-0.1.3-usb.bin",
+    "size": 16610104,
+    "sha256": "98acc131d5a1d1ab97a0a62917d7ba702ee493fa04f2b333378436fbbfef0380"
+  },
+  "ota": {
+    "path": "firmware/metalio/ThingsOS-metalio-0.1.3-ota.bin",
+    "size": 6512144,
+    "sha256": "5a2180ea92436eab5ee73ee4d90698d374a57b2e6b0ada17b0a37420fc192fa8"
+  },
+  "parts": [
+    {
+      "label": "bootloader",
+      "offset": 8192,
+      "size": 22864,
+      "sha256": "3aa39b589fbb6a502119bef3ee850a36be3d9e492954a4e6ddf1a2a1daf83784",
+      "md5": "e404fe6dc79ec3802b88f47f3d7bc406"
+    },
+    {
+      "label": "partitions",
+      "offset": 32768,
+      "size": 4096,
+      "sha256": "0c09bd1d84868b92cd590b7ab7038e2c65dd9f23305116b2e52956e625fc2ee9",
+      "md5": "67cdf476ba2dbe18ebeb694becfc03ed"
+    },
+    {
+      "label": "nvs",
+      "offset": 36864,
+      "size": 24576,
+      "sha256": "1df8949b2e345ab8c00cb81fb6b83686e20a4080f969e5cd8b8d520a07cdaba2",
+      "md5": "5c65ae66b72ed07bba39174eb31762ed"
+    },
+    {
+      "label": "otadata",
+      "offset": 61440,
+      "size": 8192,
+      "sha256": "7c0e7928b9f8d90fd5b0d4dcf7bf325674bf4367576345e4789c032e5475741f",
+      "md5": "78c57223ebf1edd9a21982ba805df8c5"
+    },
+    {
+      "label": "rescue",
+      "offset": 131072,
+      "size": 1351136,
+      "sha256": "adf0cd02cc18142e966759eaa6ea7317bab0684cf9a5ae6c905e07d7d7b6d5d7",
+      "md5": "090e00b380dd26e8ae9d601691d10863"
+    },
+    {
+      "label": "app",
+      "offset": 2228224,
+      "size": 6512144,
+      "sha256": "5a2180ea92436eab5ee73ee4d90698d374a57b2e6b0ada17b0a37420fc192fa8",
+      "md5": "df3ef7aca768c43c0e2ed8c59ba15be4"
+    },
+    {
+      "label": "font",
+      "offset": 13631488,
+      "size": 2978616,
+      "sha256": "436f7c857ba9ac953a38000ea18cc6d555373e98607bcb24225e5d14cad7db7b",
+      "md5": "5332f321be082858a162c719664352fe"
+    }
+  ],
+  "stub": {
+    "path": "vendor/metalio/esp32s31-stub.json",
+    "sha256": "bccb338d09714d35283048936056adc2ba4d2172a694ad1f79a08ed04cc242ad",
+    "version": "esptool 5.5.0"
+  },
+  "tool": {
+    "name": "esptool-js",
+    "version": "0.7.0",
+    "path": "vendor/metalio/esptool.js",
+    "sha256": "00ebe6fb0b202976d3e2a3c6b9a6bd438c26a81d2af6739c95ac276a64c1a84e"
+  },
+  "device_validation": "0.1.3 尚未在实机安装；本次发布基于构建与整包校验，实机仍在运行 0.1.2 修正版（ELF 755e34d8）。",
+  "limitations": [
+    "0.1.3 尚未在 E-INK4 PLUS 实机完成安装验收；刷机前请按安装说明保留完整备份。",
+    "首次网页安装需要设备进入 BOOT 刷机模式（设置 → BOOT 刷机，或按住 BOOT 上电）。",
+    "安装会写入引导、分区表、救援系统、主系统和系统字体，并清空 NVS。",
+    "音频输出、蓝牙耳机、闹钟响铃与面板光学表现需要实机确认。"
+  ]
+}

@@ -1,0 +1,124 @@
+{
+  "source": "Current firmware UI renderer via native/tools/render_site_screens.c",
+  "content": "Illustrative books and self-authored reading text; sample statistics; not physical device photographs",
+  "cover_source": {
+    "title": "Alice's Adventures in Wonderland",
+    "provider": "Project Gutenberg, ebook 11",
+    "url": "https://www.gutenberg.org/ebooks/11",
+    "image": "https://www.gutenberg.org/cache/epub/11/images/cover.jpg",
+    "rights": "Public domain in the USA, per source ebook metadata"
+  },
+  "book_cover_illustrations": [
+    {
+      "book": "山间来信",
+      "file": "../covers/mountain-letter.jpg",
+      "description": "Generated grayscale literary illustration; no in-image text"
+    },
+    {
+      "book": "瓦尔登湖",
+      "file": "../covers/walden.jpg",
+      "description": "Generated grayscale literary illustration; no in-image text"
+    },
+    {
+      "book": "飞鸟集",
+      "file": "../covers/bird-collection.jpg",
+      "description": "Generated grayscale literary illustration; no in-image text"
+    },
+    {
+      "book": "朝花夕拾",
+      "file": "../covers/morning-blossoms.jpg",
+      "description": "Generated grayscale literary illustration; no in-image text"
+    },
+    {
+      "book": "爱丽丝漫游奇境记",
+      "file": "../covers/alice-cover.jpg",
+      "description": "Project Gutenberg ebook 11 cover source, transformed to monochrome engraving for e-ink"
+    }
+  ],
+  "images": [
+    {
+      "file": "reading.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "b19b4a8008e3312744312e5dd57dadda992609f88d533482daabc48e4f18135c"
+    },
+    {
+      "file": "reading-menu.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "501882330eba3c170ca0cc13f029db85315ca18b9adf84a27295f19b93f973fb"
+    },
+    {
+      "file": "library.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "4e650d2d901e5771ac8c50501677e2147bcfbacc937313e59a66e888f438fa4f"
+    },
+    {
+      "file": "statistics.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "ba8fcf48250ab0be1e235014063b659dfe30a3cd4881c9317c07e07ec8242872"
+    },
+    {
+      "file": "wallpapers.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "5c4fe15b2c90ec2b78651e96a3821686eafdc64e7d9b3973993387360a502f64"
+    },
+    {
+      "file": "lock-book-cover.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "b6c3d22c07761b6e900e542a5ca77de06fd68c884484d284c2c2352983427824"
+    },
+    {
+      "file": "weread-shelf.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "ffdae47cc05c0d9effcc383150450c67dca6597d0e874fb1473ee154d0f2361c"
+    },
+    {
+      "file": "weread-offline.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "6fdd99c16f68be5a47aa3f61355f68a41649fafd9d0eda93c73ff5033281d48a"
+    },
+    {
+      "file": "weread-highlights.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "7655daedd3a15a2a061838ea6ba010790f50b04c522def7d1fe7494652b67b4b",
+      "firmware_version": "0.3.5",
+      "illustrative_data": true,
+      "renderer": "native/tools/render_site_screens.c --features-only"
+    },
+    {
+      "file": "weread-thoughts.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "a621836ed5b52976106676a3ac20f14af0f8ecc88565b859eb4329f9e3fe824c",
+      "firmware_version": "0.3.5",
+      "illustrative_data": true,
+      "renderer": "native/tools/render_site_screens.c --features-only"
+    },
+    {
+      "file": "footnote-card.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "ec9a21995c98d58eb04b568bdeafe59704126a1372fee55cd6ec6312a2268482",
+      "firmware_version": "0.3.5",
+      "illustrative_data": true,
+      "renderer": "native/tools/render_site_screens.c --features-only"
+    },
+    {
+      "file": "weread-reading-time.webp",
+      "width": 684,
+      "height": 1216,
+      "sha256": "a49f081052c07ea598750652af70c2bc6ac1b7add714d78c4c17e107970170bd",
+      "firmware_version": "0.3.5",
+      "illustrative_data": true,
+      "renderer": "native/tools/render_site_screens.c --features-only"
+    }
+  ]
+}
