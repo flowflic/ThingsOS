@@ -200,7 +200,11 @@ static void weidu_poll(void) {
     }
     if(app.weidu.busy && !next.busy && app.weidu_action==WD_DEVICE_RT_AUTH)
         wd_rt_auth_finished(&next);
-    if (app.weidu.busy && !next.busy) {
+    /* A job the user started restarts the idle interval when it finishes.
+       Background work (the 30 s reading report, chapter prefetch, covers) is
+       not activity: counting it kept the reader awake forever and kept
+       reading time accumulating while nobody was reading. */
+    if (app.weidu.busy && !next.busy && !app.weidu.background) {
         app.activity_at = now();
         thingsos_runtime_activity(&app.runtime, app.activity_at);
     }

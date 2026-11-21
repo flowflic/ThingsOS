@@ -2110,7 +2110,13 @@ int main(int argc, char** argv) {
     navigate(THINGSOS_UI_DISPLAY);unsigned locked_size=app.px;tap(550,340);
     CHECK(app.px==locked_size && strstr(app.message,"微读"));
     app.activity_at=0;host_weidu.busy=false;++host_weidu.serial;weidu_poll();
-    CHECK(app.activity_at==now());weidu_enter();
+    CHECK(app.activity_at==now());
+    /* A finished background reading report is not user activity: the reader
+       must still lock after the idle interval. */
+    host_weidu.busy=true;host_weidu.background=true;++host_weidu.serial;weidu_poll();
+    app.activity_at=1;host_weidu.busy=false;++host_weidu.serial;weidu_poll();
+    CHECK(app.activity_at==1);host_weidu.background=false;
+    weidu_enter();
     host_weidu.authenticated=true;host_weidu.phase=WD_READY;host_weidu.count=5;++host_weidu.serial;
     weidu_poll();CHECK(app.weidu_count==4 && app.weidu_total==5);snapshot("weidu-shelf");
     unsigned shelf_reads=host_weidu_search_calls;

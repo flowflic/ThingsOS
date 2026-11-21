@@ -1,7 +1,7 @@
 {
   "version": "0.2.2",
   "esp_idf_commit": "fff9895c82d744c7237be8847347bdd1b07c6643",
-  "build_instructions": "native/docs/METALIO-0.2.2.md",
+  "build_instructions": "README.md",
   "additional_reference_files": [
     "references/read-pico-official/components/epdiy/CMakeLists.txt",
     "references/read-pico-official/components/epdiy/idf_component.yml",
@@ -65,6 +65,6 @@
     "references/read-pico-official/components/sc7a20h/README.md",
     "references/read-pico-official/components/sc7a20h/sc7a20h.c"
   ],
-  "source_snapshot": "Metalio 0.2.2",
-  "commit": "ed22f1a26459b1519e3b3bd559db1beed326ce85"
+  "source_snapshot": "Metalio 0.2.2 with WeRead auto-lock fix",
+  "commit": "4414d2fbce093b00da76b7cd60a9ba6d30c489b0"
 }
