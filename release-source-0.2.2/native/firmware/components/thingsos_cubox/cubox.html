@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cubox 手机配对 - ThingsOS</title>
+<style>
+:root{color-scheme:light;--bg:#f6f5f2;--card:#fff;--ink:#1c1b19;--muted:#68645d;--line:#dcd8cf;--acc:#1c1b19}
+*{box-sizing:border-box}
+body{margin:0;padding:20px;background:var(--bg);color:var(--ink);font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:460px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px}
+h1{margin:0 0 6px;font-size:21px}
+p.sub{margin:0 0 18px;color:var(--muted);font-size:14px}
+label{display:block;font-weight:600;margin:14px 0 6px;font-size:14px}
+input,select,textarea{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff}
+textarea{min-height:84px;resize:vertical}
+.hint{margin:6px 0 0;color:var(--muted);font-size:13px}
+button{width:100%;margin-top:18px;padding:12px 16px;border:0;border-radius:10px;background:var(--acc);color:#fff;font:600 16px inherit;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+.msg{margin-top:14px;padding:11px 12px;border-radius:10px;font-size:14px;display:none}
+.msg.ok{display:block;background:#edf7ed;color:#1b5e20;border:1px solid #c5e1c5}
+.msg.err{display:block;background:#fdecea;color:#8c1d18;border:1px solid #f5c6cb}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>连接 Cubox 稍后阅读</h1>
+<p class="sub">将电子书与手机置于同一 WiFi，输入墨水屏上的 8 位配对码和你的 Cubox API 扩展链接或 Token。</p>
+<form id="f">
+<label for="code">墨水屏配对码</label>
+<input id="code" inputmode="numeric" maxlength="8" autocomplete="one-time-code" placeholder="8 位数字配对码" required>
+
+<label for="server">服务器（使用 API 链接时会自动识别）</label>
+<select id="server">
+<option value="cubox.pro">cubox.pro（国际版 / 通用）</option>
+<option value="cubox.cc">cubox.cc（国内版）</option>
+</select>
+
+<label for="cred">API 扩展链接 或 Token</label>
+<textarea id="cred" placeholder="https://cubox.pro/c/api/save/xxxxxx 或纯 Token" required></textarea>
+<p class="hint">在 Cubox 设置 → 扩展中心 / API 扩展中可查看你的 API 链接。凭证直接保存在设备本地。</p>
+
+<button id="btn" type="submit">验证并保存到设备</button>
+</form>
+<div id="msg" class="msg"></div>
+</div>
+<script>
+const f = document.getElementById('f');
+const btn = document.getElementById('btn');
+const msg = document.getElementById('msg');
+function show(ok, text) {
+  msg.className = 'msg ' + (ok ? 'ok' : 'err');
+  msg.textContent = text;
+}
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  btn.disabled = true;
+  show(true, '正在发送到电子书并验证 Cubox 连接，请查看墨水屏…');
+  try {
+    const res = await fetch('/api/cubox/pair', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        code: document.getElementById('code').value.trim(),
+        server: document.getElementById('server').value,
+        credential: document.getElementById('cred').value.trim()
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.ok) {
+      show(true, data.message || '已提交验证，请查看墨水屏确认结果。');
+    } else {
+      show(false, (data && data.message) || ('提交失败 (HTTP ' + res.status + ')'));
+    }
+  } catch (err) {
+    show(false, '无法连接电子书，请确认手机与设备在同一 WiFi。');
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

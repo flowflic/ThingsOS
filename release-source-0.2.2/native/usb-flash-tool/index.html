@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Metalio USB 烧录</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Metalio USB 烧录</h1>
+      <p class="sub">只写主应用 @0x220000，烧完自动复位并读取启动日志</p>
+    </div>
+    <div class="env" id="env"></div>
+  </header>
+
+  <main>
+    <section class="panel controls">
+      <div class="field">
+        <label for="port">串口</label>
+        <div class="inline">
+          <select id="port"></select>
+          <button id="refresh" class="ghost" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="artifact">最近的构建</label>
+        <select id="artifact"></select>
+      </div>
+
+      <div class="field">
+        <label for="path">镜像路径</label>
+        <input id="path" type="text" spellcheck="false" autocomplete="off">
+      </div>
+
+      <label class="check">
+        <input id="selector" type="checkbox" checked>
+        <span>同时写入启动选择数据 @0xf000（当前不一致时才写）</span>
+      </label>
+
+      <button id="start" class="primary" type="button">开始烧录并检查</button>
+      <p class="hint">救援分区、NVS、字体和面板电压不会被改动。写入失败或启动失败时设备会停在救援。</p>
+    </section>
+
+    <section class="panel output">
+      <div class="statusbar">
+        <span id="stage">就绪</span>
+        <span id="progress"></span>
+      </div>
+      <div id="verdict" class="verdict" hidden></div>
+      <pre id="log"></pre>
+      <div class="foot" id="evidence"></div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

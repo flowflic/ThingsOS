@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ThingsOS · 连接 ima</title>
+<style>*{box-sizing:border-box}body{font:16px/1.8 system-ui;max-width:480px;margin:32px auto;padding:0 24px;color:#222}h1{font-size:28px;line-height:1.4}label{display:block;margin:20px 0}input{display:block;width:100%;font:inherit;padding:12px;border:1px solid #888;border-radius:0}button{font:inherit;background:#111;color:white;border:0;padding:14px;width:100%}button:disabled{opacity:.55}small{display:block;color:#555}a{color:inherit}#result{white-space:pre-wrap;overflow-wrap:anywhere;border-left:3px solid #aaa;padding-left:14px}#result:empty{display:none}#result[data-phase=failed]{border-color:#a22}#result[data-phase=ready]{border-color:#28643e}</style>
+<h1>连接 ima 知识库</h1>
+<p>填写设备屏幕上的配对码，以及 ima 开放平台的凭证。</p>
+<p><small>设备会保存连接，重启后继续使用，无需另设解锁密码。请在自己的可信 WiFi 内配置。</small></p>
+<p>凭证获取：<a href="https://ima.qq.com/agent-interface" target="_blank" rel="noreferrer">ima 开放平台</a></p>
+<form id="form" autocomplete="off">
+<label>设备配对码<input id="code" required pattern="[0-9]{8}" maxlength="8" inputmode="numeric" autocomplete="off"></label>
+<label>Client ID<input id="client" required maxlength="255" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+<label>API Key<input id="key" type="password" required maxlength="1023" autocomplete="new-password"></label>
+<button id="send">验证并保存连接</button></form>
+<p id="result" role="status" aria-live="polite"></p>
+<script>
+const form=document.querySelector('#form'),key=document.querySelector('#key'),client=document.querySelector('#client');
+async function deviceRequest(path,options){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);try{return await fetch(path,{...options,signal:controller.signal,cache:'no-store',redirect:'error'});}finally{clearTimeout(timer);}}
+async function configureDevice(code,clientId,apiKey,show){
+ const response=await deviceRequest('/configure',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,clientId,apiKey})});
+ const received=await response.text();if(!response.ok)throw new Error(received||'设备未接受配置，请检查配对码。');
+ show('正在验证 ima 凭证并获取知识库…','verifying');
+ for(let attempt=0;attempt<90;attempt++){
+  const poll=await deviceRequest('/configure/status',{headers:{'X-ThingsOS-Pair-Code':code}});
+  if(!poll.ok)throw new Error(await poll.text()||'无法读取验证结果，请查看设备。');
+  const state=await poll.json();
+  if(state.phase==='ready'){show(state.message||'连接已保存，请在设备选择默认知识库。','ready');return true;}
+  if(state.phase==='failed')throw new Error(state.message||'验证失败，请检查 Client ID 与 API Key。');
+  show(state.message||'设备正在验证，请稍候…','verifying');
+  await new Promise(resolve=>setTimeout(resolve,1000));
+ }
+ throw new Error('验证尚未完成，请查看设备结果，勿重复提交。');
+}
+form.onsubmit=async event=>{
+ event.preventDefault();const button=document.querySelector('#send'),result=document.querySelector('#result');
+ const show=(text,phase)=>{result.textContent=text;result.dataset.phase=phase;};
+ button.disabled=true;show('正在提交配置…','verifying');let ready=false;
+ try{ready=await configureDevice(document.querySelector('#code').value.trim(),client.value.trim(),key.value.trim(),show);}
+ catch(error){show(error.name==='AbortError'?'设备响应超时，请查看设备结果。':error.message||'连接中断，请查看设备结果。','failed');}
+ finally{key.value='';button.disabled=ready;}
+};
+</script></html>

@@ -1,0 +1,18 @@
+{
+  "source": "User-approved ThingsOS apps UE; prototype.js paths and prototype.css app-icon geometry",
+  "license": "Apache-2.0",
+  "tile_size": 108,
+  "glyph_canvas": 58,
+  "glyph_size": 57,
+  "stroke_width": 1.35,
+  "stroke": "#111111",
+  "border": "#222222",
+  "icons": [
+    {"name":"transfer","svg":"<path d=\"M12 15V3m-5 5 5-5 5 5M4 15v5h16v-5\"/>"},
+    {"name":"wifi","svg":"<path d=\"M2 8a16 16 0 0 1 20 0M5.5 12a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0\"/><circle cx=\"12\" cy=\"20\" r=\".6\" fill=\"currentColor\"/>"},
+    {"name":"folder","svg":"<path d=\"M3 6h7l2 3h9v11H3Z\"/><path d=\"M3 6V4h7l2 2h7v3\"/>"},
+    {"name":"mic","svg":"<rect x=\"8\" y=\"2\" width=\"8\" height=\"13\" rx=\"4\"/><path d=\"M5 11v2a7 7 0 0 0 14 0v-2M12 20v3m-4 0h8\"/>"},
+    {"name":"music","svg":"<path d=\"M10 18V5l11-2v13M10 9l11-2\"/><ellipse cx=\"6\" cy=\"19\" rx=\"4\" ry=\"3\"/><ellipse cx=\"17\" cy=\"17\" rx=\"4\" ry=\"3\"/>"},
+    {"name":"sun","svg":"<circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M20 4l-2 2M6 18l-2 2\"/>"}
+  ]
+}
