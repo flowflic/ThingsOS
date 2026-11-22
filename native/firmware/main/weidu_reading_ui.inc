@@ -2,6 +2,27 @@
  * Main-task-only read overlays and asynchronous network handoff.
  */
 #define WD_ROOT "/sdcard/.thingsos/weidu"
+static bool wd_rt_set(bool enabled) {
+    bool previous=app.wd_time_on,previous_rt=app.wd_rt_on;
+    app.wd_time_on=app.wd_rt_on=enabled;
+    if(!preferences_save()) {
+        app.wd_time_on=previous;app.wd_rt_on=previous_rt;
+        say("设置保存失败，请重试");
+        app.dirty=true;return false;
+    } else {
+        /* A later enable must not report seconds read while this switch was off. */
+        if(app.wd_active)app.wd_accounted=app.runtime.reading_ms;
+        say(enabled?"已开启，再次打开书籍后生效":"已关闭，待发时长保留");
+    }
+    app.dirty=true;
+    return true;
+}
+static void wd_rt_uploaded_text(char* text,size_t size,const thingsos_rt_device_status_t* s) {
+    if(!s->today_ready||s->today_online>UINT64_MAX-s->today_native)snprintf(text,size,"今日已上传 暂不可读取");
+    else {uint64_t total=s->today_online+s->today_native;
+        snprintf(text,size,"今日已上传 %llu 小时 %02u 分 %02u 秒",
+            (unsigned long long)(total/3600),(unsigned)(total/60%60),(unsigned)(total%60));}
+}
 #include "weidu_readtime_ui.inc"
 static void wd_forget_map(void) {
     reader_cache_clear();
@@ -901,19 +922,22 @@ static bool wd_draw(void) {
         char diagnostic[128];
         if(wd_sync_diagnostic_text(diagnostic,sizeof(diagnostic))) {
             label(wd_sync_failure_hint(&app.wd_status.diagnostic),36,345,22,612);
-            label(diagnostic,36,375,17,612);
+            char* details=strstr(diagnostic," X");
+            if(details)*details++=0;
+            label(diagnostic,36,369,15,612);
+            if(details)label(details,36,393,15,612);
         }
-        wd_stamp("上次拉取", app.wd_status.pulled_at, app.wd_status.pull, 405);
-        wd_stamp("进度上传", app.wd_status.uploaded_at, app.wd_status.progress, 462);
+        wd_stamp("上次拉取", app.wd_status.pulled_at, app.wd_status.pull, 438);
+        wd_stamp("进度上传", app.wd_status.uploaded_at, app.wd_status.progress, 480);
         char duration[160];
         thingsos_rt_device_status_t totals;thingsos_wd_rt_status(&totals);
         char today[128];wd_rt_uploaded_text(today,sizeof(today),&totals);
         snprintf(duration,sizeof(duration),"阅读时长：%s",today);
-        label(duration,36,520,25,612);
+        label(duration,36,524,24,612);
         if (app.wd_status.expired) label("需重新登录，待上传时长保留", 36, 577, 24, 612);
         else if(app.wd_status.duration==WD_UNCONFIRMED||totals.queue.unknown)label("待确认时长未计入今日累计",36,577,24,612);
         else if(!totals.today_ready)label("成功记录暂不可读取，待发时长保留",36,577,23,612);
-        else if(app.wd_time_on&&!totals.authorized)label("离线补传需授权，可进入时长明细处理",36,577,22,612);
+        else if(!app.wd_time_on||!app.wd_time_confirmed||!totals.authorized)label("离线补传未配置，进入「离线阅读时长补传」授权",36,577,22,612);
         else label("本机已确认记录 · 按阅读日期归档",36,577,23,612);
         char info[128];
         snprintf(info, sizeof(info), "打开时拉取：%s", app.wd_pull_on ? "开" : "关");
@@ -921,11 +945,11 @@ static bool wd_draw(void) {
         snprintf(info, sizeof(info), "退出时上传：%s", app.wd_push_on ? "开" : "关");
         weidu_button(info, 36, 720, 612);
         snprintf(
-            info, sizeof(info), "上传阅读时长（含离线）：%s",
+            info, sizeof(info), "上传阅读时长：%s",
             app.wd_time_on ? (app.wd_time_confirmed ? "开" : "待确认") : "关");
         weidu_button(info, 36, 810, 612);
-        weidu_button("立即同步进度", 36, 900, 612);
-        weidu_button("阅读时长明细", 36, 1000, 612);
+        weidu_button("立即同步进度", 36, 915, 612);
+        weidu_button("离线阅读时长补传", 36, 1000, 612);
         return true;
     }
     return false;
@@ -1072,6 +1096,7 @@ static bool wd_tap(int x, int y) {
         if (y >= 100 && y < 195 && x >= 548 && x < 648) {
             app.wd_sync_panel = false;
             app.dirty = true;
+            app.transition_refresh = true;
         } else if (y >= 250 && y < 318)
             weidu_begin(WD_DEVICE_SYNC, NULL);
         else if (y >= 630 && y < 698) {
@@ -1089,14 +1114,15 @@ static bool wd_tap(int x, int y) {
             } else
                 wd_rt_set(!app.wd_time_on);
             app.dirty = true;
-        } else if (y >= 1000 && y < 1068) {
-            app.wd_rt_panel=true;app.wd_rt_details=false;app.dirty=true;
-            if(wd_rt_capture)wd_rt_checkpoint(true);
-        } else if (y >= 900 && y < 968) {
+        } else if (y >= 915 && y < 983) {
             if (!app.wd_last_valid)
                 say("请先打开并阅读一本微读缓存书籍");
             else if (!wd_request(WD_DEVICE_UPLOAD, app.wd_last.id, &app.wd_last))
                 say(wd_sync_start_hint());
+        }
+        else if(x>=36 && x<648 && y>=1000 && y<1068) {
+            app.wd_rt_panel=true;app.wd_rt_details=false;app.dirty=true;app.transition_refresh=true;
+            if(wd_rt_capture)wd_rt_checkpoint(true);
         }
         return true;
     }

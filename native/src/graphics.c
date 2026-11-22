@@ -284,6 +284,22 @@ void thingsos_rect(thingsos_canvas_t* c, int x, int y, int w, int h, unsigned ch
     for (int j = y; j < bottom; j++)
         for (int i = x; i < right; i++) c->pixels[(size_t)j * c->width + i] = shade;
 }
+void thingsos_round_rect(thingsos_canvas_t* c, int x, int y, int w, int h, int r,
+                         unsigned char shade) {
+    if (!c || !c->pixels || w <= 0 || h <= 0) return;
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+    if (r <= 0) {thingsos_rect(c, x, y, w, h, shade);return;}
+    /* Middle band in one call; each corner row takes the inset that keeps the
+       row's pixel centres inside the circle. */
+    thingsos_rect(c, x, y + r, w, h - 2 * r, shade);
+    for (int j = 0; j < r; ++j) {
+        int dy2 = (2 * (r - j) - 1) * (2 * (r - j) - 1), inset = 0;
+        while (inset < r && (2 * (r - inset) - 1) * (2 * (r - inset) - 1) + dy2 > 4 * r * r) ++inset;
+        thingsos_rect(c, x + inset, y + j, w - 2 * inset, 1, shade);
+        thingsos_rect(c, x + inset, y + h - 1 - j, w - 2 * inset, 1, shade);
+    }
+}
 static void glyph_placeholder(thingsos_canvas_t* c,unsigned size,int x,int baseline) {
     int side=(int)size-6;if(side<8)side=8;
     thingsos_rect(c,x+2,baseline-(int)size+3,side,1,0);
@@ -571,6 +587,7 @@ typedef struct {
     const thingsos_footnote_t* footnotes;size_t footnote_count;
     const thingsos_chapter_t* markdown;
     unsigned cover_image;
+    bool justify; /* reader body text: spread soft-wrap slack across the line */
 } text_view_t;
 /* One footnote marker spans several glyphs; merge them into a single box and
    pad it slightly so a 17-pixel digit is still a comfortable target. The box is
@@ -616,6 +633,161 @@ static int text_line_advance(const thingsos_font_t* font,unsigned size,unsigned 
     if(denser>=(int)size && abs(denser-nominal)<=abs(pitch-nominal))pitch=denser;
     return pitch;
 }
+/* Width the glyph at p needs at a line end: its own advance plus the closing
+   punctuation that may not start the next line. Bounded lookahead, no
+   allocation; does not cross images, hidden text, a style boundary (limit) or
+   superscript references. Used by Markdown, UI text and vertical flow. */
+static int text_reserve(thingsos_font_t* f,const text_view_t* ch,size_t look,size_t limit,int a,int width) {
+    int reserve=a;
+    for(unsigned count=0;count<8 && look<ch->bytes;++count) {
+        if(look>=limit || (look>=ch->hidden_start && look<ch->hidden_end))break;
+        unsigned n;uint32_t following=next(ch->text+look,ch->bytes-look,&n);
+        if(!line_start_prohibited(following))break;
+        bool boundary=false;
+        for(size_t i=0;i<ch->image_count;++i)
+            if(ch->images[i].offset==look){boundary=true;break;}
+        for(size_t i=0;i<ch->footnote_count && !boundary;++i)
+            if(look>=ch->footnotes[i].begin && look<ch->footnotes[i].end)boundary=true;
+        if(boundary)break;
+        int advance=thingsos_glyph(f,NULL,following,0,0);
+        if(advance>width || reserve>width-advance){reserve=a;break;}
+        reserve+=advance;look+=n;
+    }
+    return reserve;
+}
+/* Horizontal reader body text follows clreq line breaking
+   (https://www.w3.org/TR/clreq/#line_breaking): fill the line at normal
+   advances first, then fit punctuation that does not fit instead of
+   reserving its full width up front and pushing the preceding character down.
+   - Closing marks whose ink sits in the left half of the em box (，。、；：
+     and closing quotes/brackets) may drop the empty half at a line end.
+   - A single point mark (，。、．) may then hang a little into the right
+     margin (https://www.w3.org/TR/clreq/#hanging_punctuation), keeping a safe
+     distance from the screen edge.
+   - Dashes and ellipses stay unbroken with the preceding character; the line
+     may tighten its spacing slightly to keep the group at the line end.
+   - Opening marks do not end a line.
+   Whatever does not fit moves to the next line, and the line it leaves is
+   justified (text_line_measure). Paragraph-final lines end naturally. */
+static bool line_end_prohibited(uint32_t cp) {
+    switch(cp) {
+        case '(': case '[': case '{':
+        case 0x2018: case 0x201c: case 0x3008: case 0x300a: case 0x300c: case 0x300e:
+        case 0x3010: case 0x3014: case 0x3016: case 0x3018: case 0x301a:
+        case 0xff08: case 0xff3b: case 0xff5b: return true;
+        default: return false;
+    }
+}
+static bool punct_squeezable(uint32_t cp) {
+    switch(cp) {
+        case 0x3001: case 0x3002: case 0xff0c: case 0xff0e: case 0xff1a: case 0xff1b:
+        case 0x2019: case 0x201d: case 0x3009: case 0x300b: case 0x300d: case 0x300f:
+        case 0x3011: case 0x3015: case 0x3017: case 0xff09: case 0xff3d: case 0xff5d: return true;
+        default: return false;
+    }
+}
+static bool punct_point(uint32_t cp) {return cp==0x3001 || cp==0x3002 || cp==0xff0c || cp==0xff0e;}
+static bool punct_group(uint32_t cp) {return cp==0x2014 || cp==0x2026;}
+/* Only full-width punctuation has an empty half to drop. */
+static int punct_squeeze(const thingsos_font_t* f,uint32_t cp,int a) {
+    return punct_squeezable(cp) && a*4>=(int)f->size*3 ? a/2 : 0;
+}
+#define TEXT_HANG_SAFE_PX 8
+/* Right-margin borrowing for one point mark: at most half its advance and
+   never closer than TEXT_HANG_SAFE_PX to the screen edge. Reader margins are
+   symmetric, so the left gutter is also the right margin. */
+static int punct_hang(int margin,int a) {
+    int h=margin-TEXT_HANG_SAFE_PX;
+    if(h<0)h=0;
+    if(h>a/2)h=a/2;
+    return h;
+}
+typedef struct {int reserve,count,squeeze,hang;bool group;} text_tail_t;
+static text_tail_t text_tail(thingsos_font_t* f,const text_view_t* ch,size_t look,int a,int width,int margin) {
+    text_tail_t t={a,0,0,0,false};uint32_t last=0;int last_advance=0;
+    for(unsigned count=0;count<8 && look<ch->bytes;++count) {
+        if(look>=ch->hidden_start && look<ch->hidden_end)break;
+        unsigned n;uint32_t following=next(ch->text+look,ch->bytes-look,&n);
+        if(!line_start_prohibited(following))break;
+        bool boundary=false;
+        for(size_t i=0;i<ch->image_count;++i)
+            if(ch->images[i].offset==look){boundary=true;break;}
+        for(size_t i=0;i<ch->footnote_count && !boundary;++i)
+            if(look>=ch->footnotes[i].begin && look<ch->footnotes[i].end)boundary=true;
+        if(boundary)break;
+        int advance=thingsos_glyph(f,NULL,following,0,0);
+        if(advance>width || t.reserve>width-advance)return (text_tail_t){a,0,0,0,false};
+        t.reserve+=advance;++t.count;t.squeeze+=punct_squeeze(f,following,advance);
+        if(punct_group(following))t.group=true;
+        last=following;last_advance=advance;look+=n;
+    }
+    if(t.count==1 && punct_point(last))t.hang=punct_hang(margin,last_advance);
+    return t;
+}
+/* True when the glyph at p starts a new line. force_keep counts closing
+   marks already admitted to this line with the glyph before them. */
+static bool clreq_wrap(thingsos_font_t* f,const text_view_t* ch,size_t p,unsigned bytes,uint32_t cp,int a,
+                       int x,int width,int margin,bool paragraph_ink,int line_glyphs,int* force_keep) {
+    if(*force_keep>0){--*force_keep;return false;}
+    if(x+a>width)return true;
+    if(!paragraph_ink || x<=0 || epub_paragraph_indent(cp) || line_start_prohibited(cp))return false;
+    text_tail_t t=text_tail(f,ch,p+bytes,a,width,margin);
+    if(t.count && x+t.reserve>width) {
+        int over=x+t.reserve-width,room=t.squeeze+t.hang;
+        if(t.group)room+=(line_glyphs+t.count)*(int)f->size/12;
+        if(over>room)return true;
+        *force_keep=t.count;
+        return false;
+    }
+    if(line_end_prohibited(cp) && p+bytes<ch->bytes) {
+        unsigned n;uint32_t following=next(ch->text+p+bytes,ch->bytes-p-bytes,&n);
+        if(following!='\r' && following!='\n' && x+a+thingsos_glyph(f,NULL,following,0,0)>width)return true;
+    }
+    return false;
+}
+/* Measure the line whose first glyph (at p, logical x) was just placed, with
+   the same clreq_wrap decisions as the layout. Produces the drawing offset:
+   soft-wrapped lines spread their remaining width over the glyph gaps (or
+   tighten when a punctuation group was kept), and trailing squeezable marks
+   drop their empty halves. Pagination never depends on these offsets.
+   Headings, images, hidden text and footnotes are not modelled: false. */
+typedef struct {int slack,glyphs,tail;} text_line_t;
+static bool text_line_measure(thingsos_font_t* f,const text_view_t* ch,size_t p,int x,int width,int margin,
+                              bool paragraph_ink,int force_keep,text_line_t* out) {
+    int n=0,squeezed=0,tail=-1,last_advance=0;uint32_t last=0;bool soft=false;
+    while(p<ch->bytes && n<512) {
+        if(p>=ch->hidden_start && p<ch->hidden_end)return false;
+        if(ch->heading && p>=ch->heading_start && p<ch->heading_end)return false;
+        if(n)for(size_t i=0;i<ch->image_count;++i)if(ch->images[i].offset==p)return false;
+        unsigned bytes;uint32_t cp=next(ch->text+p,ch->bytes-p,&bytes);
+        if(cp=='\r' || cp=='\n')break;
+        for(size_t i=0;i<ch->footnote_count;++i)
+            if(p<ch->footnotes[i].end && p+bytes>ch->footnotes[i].begin)return false;
+        int a=thingsos_glyph(f,NULL,cp,0,0);
+        if(n && clreq_wrap(f,ch,p,bytes,cp,a,x,width,margin,paragraph_ink,n,&force_keep)){soft=true;break;}
+        int sq=punct_squeeze(f,cp,a);
+        if(sq){if(tail<0)tail=n;squeezed+=sq;}else{tail=-1;squeezed=0;}
+        last=cp;last_advance=a;
+        x+=a;++n;
+        if(cp!=' ' && cp!='\t')paragraph_ink=true;
+        p+=bytes;
+    }
+    if(!n)return false;
+    int content=x-squeezed,hang=0;
+    if(tail==n-1 && punct_point(last) && content>width) {
+        hang=punct_hang(margin,last_advance);
+        if(hang>content-width)hang=content-width;
+    }
+    int slack=width+hang-content;
+    if(!soft) {
+        /* Paragraph or chapter end: natural unless punctuation was fitted. */
+        if(x<=width)return false;
+        if(slack>0)slack=0;
+    }
+    if(slack>3*(int)f->size)slack=0;
+    out->slack=slack;out->glyphs=n;out->tail=tail<0?n:tail;
+    return true;
+}
 static size_t text_view_page(
     thingsos_font_t* f, thingsos_canvas_t* c, const text_view_t* ch, size_t start, int left,
     int top, int width, int height, unsigned line_percent, unsigned indent_px,
@@ -646,9 +818,14 @@ static size_t text_view_page(
     int x = paragraph_head && !heading ? (int)indent_px : 0, line = text_line_advance(f,body_size,line_percent,height),
         y = top + (int)f->size, bottom = top + height;
     int checked_y=INT_MIN;
+    /* Justification of the current line: drawing offset only (see text_line_slack). */
+    int just_y=INT_MIN,just_slack=0,just_n=0,just_k=0,just_tail=0,just_squeezed=0;bool just_line=false;
+    int line_glyphs=0,force_keep=0; /* clreq_wrap state for the current line */
     if(resume) {
         p=cursor->offset;x=cursor->x;y=cursor->y;line=cursor->line;
         heading=cursor->heading;paragraph_ink=cursor->paragraph_ink;paragraph_head=cursor->paragraph_head;
+        just_y=cursor->just_y;just_slack=cursor->just_slack;just_n=cursor->just_n;just_k=cursor->just_k;just_line=cursor->just_line;
+        just_tail=cursor->just_tail;just_squeezed=cursor->just_squeezed;line_glyphs=cursor->line_glyphs;force_keep=cursor->force_keep;
         thingsos_font_size(f,cursor->size);
     }
     bool paused=false;
@@ -731,7 +908,7 @@ static size_t text_view_page(
             if (picture && c) picture(context, img, c, image_x, image_y, image_width, picture_height);
             if (show_caption && c) thingsos_label(f, c, img->alt, left, image_y + picture_height + (int)body_size + 8, width);
             y=image_y+block+below;
-            x = 0;
+            x = 0;line_glyphs=0;force_keep=0;
             paragraph_ink=false;
             paragraph_head=false;
         }
@@ -784,7 +961,7 @@ static size_t text_view_page(
                 }
             }
             if (collapse_paragraphs && !paragraph_ink) continue;
-            x = 0;
+            x = 0;line_glyphs=0;force_keep=0;
             paragraph_ink=false;
             y += line;
             if (y > bottom) break;
@@ -816,42 +993,53 @@ static size_t text_view_page(
             a = thingsos_glyph(f, NULL, cp, 0, 0);
         bool code_tab=cp=='\t' && (style.flags&MD_CODE);
         if(code_tab){int cell=thingsos_glyph(f,NULL,' ',0,0);if(cell<1)cell=(int)body_size/2;int stop=cell*4;a=stop-x%stop;}
-        int reserve=a;
-        if(!note_marker && !(style.flags&MD_CODE) && !epub_paragraph_indent(cp) &&
-           !line_start_prohibited(cp)) {
-            /* Bounded lookahead: no allocation and no backward move of the
-               streaming Markdown cursor. Do not cross images, hidden text,
-               style boundaries or superscript references. */
-            size_t look=p+bytes;
-            for(unsigned count=0;count<8 && look<ch->bytes;++count) {
-                if((md && look>=style.end) ||
-                   (look>=ch->hidden_start && look<ch->hidden_end))break;
-                unsigned n;uint32_t following=next(ch->text+look,ch->bytes-look,&n);
-                if(!line_start_prohibited(following))break;
-                bool boundary=false;
-                for(size_t i=0;i<ch->image_count;++i)
-                    if(ch->images[i].offset==look){boundary=true;break;}
-                for(size_t i=0;i<ch->footnote_count && !boundary;++i)
-                    if(look>=ch->footnotes[i].begin && look<ch->footnotes[i].end)boundary=true;
-                if(boundary)break;
-                int advance=thingsos_glyph(f,NULL,following,0,0);
-                if(advance>width || reserve>width-advance){reserve=a;break;}
-                reserve+=advance;look+=n;
-            }
+        /* Horizontal reader body text: clreq line breaking. Markdown, UI text,
+           vertical flow, headings and footnote markers keep the reserve rule. */
+        bool clreq=ch->justify && !f->vertical_text && !md && !title && !note_marker;
+        bool wrap;
+        if(clreq) wrap=clreq_wrap(f,ch,p,bytes,cp,a,x,width,left,paragraph_ink,line_glyphs,&force_keep);
+        else {
+            int reserve=a;
+            if(!note_marker && !(style.flags&MD_CODE) && !epub_paragraph_indent(cp) &&
+               !line_start_prohibited(cp))
+                /* No backward move of the streaming Markdown cursor: stop at the style run. */
+                reserve=text_reserve(f,ch,p+bytes,md?style.end:ch->bytes,a,width);
+            int line_left=md && (style.flags&(MD_QUOTE|MD_LIST))?20:0;
+            bool keep_end=paragraph_ink && x>line_left && reserve<=width-line_left && x>width-reserve;
+            wrap=x + a > width || keep_end;
+            force_keep=0;
         }
-        int line_left=md && (style.flags&(MD_QUOTE|MD_LIST))?20:0;
-        bool keep_end=paragraph_ink && x>line_left && reserve<=width-line_left && x>width-reserve;
-        if (x + a > width || keep_end) {
+        if (wrap) {
             x = md && (style.flags&(MD_QUOTE|MD_LIST))?20:0;
-            y += line;
+            y += line;line_glyphs=0;
         }
         if (y > bottom) break;
+        /* First glyph of a body line: measure it once. A soft-wrapped line
+           (notably one that ends early to keep closing punctuation with its
+           character) spreads the leftover width over its glyph gaps, so the
+           right edge stays flush. Logical x and every wrap decision are
+           unchanged; only the drawing position gx moves. */
+        if(y!=just_y) {
+            just_y=y;just_k=0;just_squeezed=0;
+            text_line_t measured;
+            just_line=clreq && text_line_measure(f,ch,p,x,width,left,paragraph_ink,force_keep,&measured);
+            if(just_line){just_slack=measured.slack;just_n=measured.glyphs;just_tail=measured.tail;}
+        }
+        int gx=x;
+        if(just_line) {
+            int k=just_k<just_n?just_k:just_n-1;
+            if(just_n>1)gx+=(int)((int64_t)just_slack*k/(just_n-1));
+            gx-=just_squeezed;
+            if(just_k>=just_tail)just_squeezed+=punct_squeeze(f,cp,a);
+            ++just_k;
+        }
+        ++line_glyphs;
         if (c) {
             if (marker_rise) thingsos_font_size(f, marker_size);
-            if(style.flags&MD_CODE)thingsos_rect(c,left+x,y-(int)f->size,a,line,235);
+            if(style.flags&MD_CODE)thingsos_rect(c,left+gx,y-(int)f->size,a,line,235);
             if(style.flags&MD_QUOTE)thingsos_rect(c,left+4,y-(int)f->size,3,line,100);
-            if(!code_tab)thingsos_glyph(f, c, cp, left + x, y - (int)marker_rise);
-            if(style.flags&MD_LINK)thingsos_rect(c,left+x,y+3,a,1,100);
+            if(!code_tab)thingsos_glyph(f, c, cp, left + gx, y - (int)marker_rise);
+            if(style.flags&MD_LINK)thingsos_rect(c,left+gx,y+3,a,1,100);
             if (marker_rise) thingsos_font_size(f, body_size);
             unsigned underline=0;
             if (!note_marker)
@@ -861,15 +1049,15 @@ static size_t text_view_page(
             int underline_offset=line-(int)f->size-4;
             if(underline_offset>10)underline_offset=10;
             if(underline_offset<1)underline_offset=1;
-            if(underline)for(int xx=left+x;xx<left+x+a;++xx)if(underline==2 || xx%7<3)
+            if(underline)for(int xx=left+gx;xx<left+gx+a;++xx)if(underline==2 || xx%7<3)
                 thingsos_rect(c,xx,y+underline_offset,1,3,0);
             /* Dotted rule right under the raised marker: the link affordance. */
-            if(note_marker)for(int xx=left+x;xx<left+x+a;++xx)if(xx%4<2)
+            if(note_marker)for(int xx=left+gx;xx<left+gx+a;++xx)if(xx%4<2)
                 thingsos_rect(c,xx,y+6-(int)marker_rise,1,2,0);
         }
         if(hits && !note_marker && a>0 && hits->glyph_count<THINGSOS_GLYPH_HIT_LIMIT) {
             hits->glyphs[hits->glyph_count++]=(thingsos_glyph_hit_t){(uint32_t)p,(uint16_t)bytes,
-                (int16_t)(left+x),(int16_t)(y-(int)f->size),(int16_t)a,(int16_t)(f->size+(f->vertical_text?0:10))};
+                (int16_t)(left+gx),(int16_t)(y-(int)f->size),(int16_t)a,(int16_t)(f->size+(f->vertical_text?0:10))};
         }
         if(hits && !note_marker && a>0)for(size_t i=0;i<ch->underline_count;++i) {
             const thingsos_text_underline_t* u=ch->underlines+i;
@@ -880,18 +1068,19 @@ static size_t text_view_page(
             if(lower<=upper)continue;
             thingsos_text_hit_t* hit=NULL;
             for(size_t j=0;j<hits->line_count;++j)if(hits->lines[j].begin==u->begin && hits->lines[j].y==upper){hit=hits->lines+j;break;}
-            if(hit){int right=left+x+a+3;if(right>hit->x+hit->w)hit->w=right-hit->x;}
-            else if(hits->line_count<THINGSOS_LINE_HIT_LIMIT)hits->lines[hits->line_count++]=(thingsos_text_hit_t){u->begin,u->end,left+x-3,upper,a+6,lower-upper};
+            if(hit){int right=left+gx+a+3;if(right>hit->x+hit->w)hit->w=right-hit->x;}
+            else if(hits->line_count<THINGSOS_LINE_HIT_LIMIT)hits->lines[hits->line_count++]=(thingsos_text_hit_t){u->begin,u->end,left+gx-3,upper,a+6,lower-upper};
         }
         if (note)
-            text_hit_add(hits, note, left + x - 6,
+            text_hit_add(hits, note, left + gx - 6,
                          y - (int)marker_rise - (int)marker_size - 4, a + 12,
                          (int)marker_rise + (int)marker_size + 10, top, bottom);
         x += a;
         if(cp!=' ' && cp!='\t') {paragraph_ink=true;paragraph_head=false;}
         p += bytes;
     }
-    if(cursor) *cursor=(thingsos_text_cursor_t){p,x,y,line,f->size,paused,heading,paragraph_ink,paragraph_head};
+    if(cursor) *cursor=(thingsos_text_cursor_t){p,x,y,line,f->size,paused,heading,paragraph_ink,paragraph_head,
+        just_y,just_slack,just_n,just_k,just_line,just_tail,just_squeezed,line_glyphs,force_keep};
     thingsos_font_size(f,body_size);thingsos_font_weight(f,original_weight);f->italic=original_italic;
     thingsos_markdown_cursor_close(md);
     return p;
@@ -899,7 +1088,7 @@ static size_t text_view_page(
 #include "vertical_text.inc"
 size_t thingsos_text_page_resume_flow(thingsos_font_t* f,thingsos_canvas_t* c,const thingsos_chapter_t* ch,size_t start,int left,int top,int width,int height,unsigned line_percent,unsigned indent_px,bool epub_paragraphs,thingsos_picture_fn picture,void* context,thingsos_text_hits_t* hits,thingsos_layout_continue_fn proceed,void* proceed_context,bool* completed,thingsos_text_cursor_t* cursor,bool vertical){
     if(!ch){if(completed)*completed=true;return 0;}
-    text_view_t view={ch->text,ch->bytes,ch->images,ch->image_count,ch->heading_start,ch->heading_end,ch->hidden_start,ch->hidden_end,ch->heading,ch->underlines,ch->underline_count,ch->footnotes,ch->footnote_count,ch->markdown_index?ch:NULL,ch->cover_image};
+    text_view_t view={ch->text,ch->bytes,ch->images,ch->image_count,ch->heading_start,ch->heading_end,ch->hidden_start,ch->hidden_end,ch->heading,ch->underlines,ch->underline_count,ch->footnotes,ch->footnote_count,ch->markdown_index?ch:NULL,ch->cover_image,true};
     if(vertical && f)return vertical_text_page(f,c,&view,start,left,top,width,height,line_percent,indent_px,epub_paragraphs,picture,context,hits,proceed,proceed_context,completed,cursor);
     return text_view_page(f,c,&view,start,left,top,width,height,line_percent,indent_px,epub_paragraphs,picture,context,hits,proceed,proceed_context,completed,cursor);
 }

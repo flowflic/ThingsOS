@@ -4,6 +4,7 @@ void thingsos_board_sleep_wait(void) {
        would cut the USB Serial/JTAG PHY. Panel, touch, frontlight and WiFi were
        already suspended by board_suspend(). A wall charger has no USB SOF. */
     if(usb_serial_jtag_is_connected()) {
+        thingsos_board_trace_stage(THINGSOS_TRACE_USB_IDLE);
         vTaskDelay(pdMS_TO_TICKS(200));
         return;
     }
@@ -18,6 +19,7 @@ void thingsos_board_sleep_wait(void) {
     gpio_wakeup_enable(METALIO_IOE_INT_GPIO,GPIO_INTR_LOW_LEVEL);
     esp_sleep_enable_gpio_wakeup();
     esp_sleep_enable_timer_wakeup(2000000);
+    thingsos_board_trace_stage(THINGSOS_TRACE_SLEEP_ENTER);
     esp_err_t err=esp_light_sleep_start();
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
@@ -29,6 +31,7 @@ void thingsos_board_sleep_wait(void) {
     static esp_err_t last_sleep_error;
     int64_t diagnostic_now=esp_timer_get_time();
     uint32_t causes=esp_sleep_get_wakeup_causes();
+    thingsos_board_trace_sleep_return(causes,err);
     if(diagnostic_now-logged_at>=60000000 || err!=last_sleep_error ||
        (causes & ~(1u<<ESP_SLEEP_WAKEUP_TIMER))) {
         thingsos_diag_event(DIAG_WAKE,1,causes,0,err,0);

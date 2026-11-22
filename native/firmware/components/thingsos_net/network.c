@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "network.h"
+#include "esp_attr.h"
 #include "thingsos/mem.h"
 #include "single_update.h"
 #include <dirent.h>
@@ -23,6 +24,9 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "thingsos/diagnostics.h"
+#include "thingsos/memory_trace.h"
+#include "thingsos/release.h"
+#include <ctype.h>
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_sntp.h"
@@ -335,6 +339,10 @@ static void network_dns(void) {
                      IP2STR(&dns.ip.u_addr.ip4));
     }
 }
+static unsigned link_losses;
+unsigned thingsos_network_link_losses(void) {
+    return __atomic_load_n(&link_losses,__ATOMIC_RELAXED);
+}
 static void wifi_event(void* arg, esp_event_base_t base, int32_t event, void* data) {
     (void)arg;
     if(base==WIFI_EVENT && event==WIFI_EVENT_SCAN_DONE) {
@@ -357,6 +365,7 @@ static void wifi_event(void* arg, esp_event_base_t base, int32_t event, void* da
         if (accepted) credentials_pending = true;
         portEXIT_CRITICAL(&state_guard);
         thingsos_diag_event(DIAG_NET_WIFI,2,accepted,0,0,0);
+        if (!rescue_mode) thingsos_memory_trace("wifi-connected",0,accepted);
         if (accepted) network_dns();
     } else if (base == WIFI_EVENT && event == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t* info = data;
@@ -369,7 +378,9 @@ static void wifi_event(void* arg, esp_event_base_t base, int32_t event, void* da
             (reason != WIFI_REASON_ASSOC_LEAVE || station_join.has_ip))
             wifi_join_disconnected(&station_join, now, reason);
         portEXIT_CRITICAL(&state_guard);
+        __atomic_add_fetch(&link_losses,1u,__ATOMIC_RELAXED);
         thingsos_diag_event(DIAG_NET_WIFI,3,reason,0,0,0);
+        if (!rescue_mode) thingsos_memory_trace("wifi-disconnected",0,(int)reason);
         ESP_LOGI("ThingsOS_network", "WiFi STA disconnected: reason=%u", reason);
     }
 }
@@ -742,7 +753,8 @@ static bool filename(httpd_req_t* req, char out[256], int* kind_out) {
         out[j++] = (char)c;
     }
     out[j] = 0;
-    if (!j || out[0] == '.' || strstr(out, "..")) return false;
+    /* Shared FAT-safe name rule (manage.c); "..." inside a name is allowed. */
+    if (!thingsos_upload_name(out)) return false;
     const char* ext = strrchr(out, '.');
     if (!ext) return false;
     return *kind_out==1 ? !strcasecmp(ext, ".ttf")
@@ -1093,12 +1105,26 @@ static esp_err_t rom_download(httpd_req_t* req) {
 static bool diagnostic_chunk(void* context,const char* data,size_t bytes) {
     return httpd_resp_send_chunk(context,data,bytes)==ESP_OK;
 }
+/* Export file name carries the board model and firmware version (no time
+   stamp), e.g. ThingsOS-diagnostics-Metalio-E-Ink4-Plus-0.2.1.json. */
+static void diagnostic_disposition(char* out,size_t cap) {
+    const esp_app_desc_t* app=esp_app_get_description();
+    char version[sizeof(app->version)];size_t n=0;
+    for(const char* s=app->version;*s && n+1<sizeof(version);++s) {
+        char c=*s;
+        version[n++]=isalnum((unsigned char)c) || c=='.' || c=='-' || c=='_' ? c : '_';
+    }
+    version[n]=0;
+    snprintf(out,cap,"attachment; filename=\"ThingsOS-diagnostics-%s-%s.json\"",THINGSOS_RELEASE_BOARD,n?version:"unknown");
+}
 static esp_err_t diagnostic_download(httpd_req_t* req) {
     if(!authorized(req))return reject(req,"401 Unauthorized","Enter device token");
     if(busy || external_busy || manage_job)return reject(req,"409 Conflict","Device busy; retry later");
     httpd_resp_set_type(req,"application/json; charset=utf-8");
     httpd_resp_set_hdr(req,"Cache-Control","no-store");
-    httpd_resp_set_hdr(req,"Content-Disposition","attachment; filename=ThingsOS-diagnostics.json");
+    /* httpd keeps the header pointer until the response is sent. */
+    char disposition[128];diagnostic_disposition(disposition,sizeof(disposition));
+    httpd_resp_set_hdr(req,"Content-Disposition",disposition);
     if(!thingsos_diag_export(diagnostic_chunk,req))return ESP_FAIL;
     return httpd_resp_send_chunk(req,NULL,0);
 }
@@ -1108,8 +1134,12 @@ static int http_service_start(void* ignored) {
     settings.stack_size = 12288;
     settings.max_uri_handlers = 13;
     settings.recv_wait_timeout = 10;
+    if (!rescue_mode) thingsos_memory_trace("http-starting",0,0);
     esp_err_t e = httpd_start(&server, &settings);
-    if (e != ESP_OK) return e;
+    if (e != ESP_OK) {
+        if (!rescue_mode) thingsos_memory_trace("http-start-failed",0,e);
+        return e;
+    }
     const httpd_uri_t routes[] = {
         { .uri = "/", .method = HTTP_GET, .handler = page },
         { .uri = "/sha256.js", .method = HTTP_GET, .handler = sha_script },
@@ -1130,6 +1160,7 @@ static int http_service_start(void* ignored) {
         if (e != ESP_OK) {httpd_stop(server);server=NULL;return e;}
     }
     ESP_LOGI("ThingsOS_network","Transfer HTTP service started");
+    if (!rescue_mode) thingsos_memory_trace("http-started",0,0);
     return ESP_OK;
 }
 static int http_service_stop(void* ignored) {
@@ -1147,6 +1178,7 @@ esp_err_t thingsos_network_service_poll(void) {
     esp_err_t result=thingsos_service_poll(&http_service,service_enabled,rescue_mode,thingsos_network_busy()||manage_job,&ops);
     if(before&&!http_service.running) {
         vTaskDelay(pdMS_TO_TICKS(20)); /* Let idle tasks reclaim the deleted HTTP stack. */
+        if (!rescue_mode) thingsos_memory_trace("http-stopped",0,0);
         unsigned internal=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
         unsigned largest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
         unsigned dma=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);

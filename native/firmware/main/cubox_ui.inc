@@ -3,7 +3,6 @@
 typedef enum {
     CUBOX_VIEW_LIST = 0,
     CUBOX_VIEW_DETAIL = 1,
-    CUBOX_VIEW_FOLDERS = 2,
     CUBOX_VIEW_PAIR = 3,
     CUBOX_VIEW_SETTINGS = 4
 } cubox_view_t;
@@ -21,6 +20,9 @@ typedef struct {
     bool painted;
     bool painted_controls;
     thingsos_ui_page_t painted_page;
+    unsigned tab;          /* 0 = 最近文章, 1 = 收藏夹 (equals the backend list slot) */
+    bool in_folder;        /* 收藏夹 tab shows one folder's articles */
+    unsigned tab_start[2]; /* list position remembered per tab */
     unsigned list_start;
     unsigned folder_start;
     unsigned last_serial;
@@ -129,9 +131,11 @@ static void cubox_enter(void) {
         thingsos_cubox_load_offline();
         thingsos_cubox_status(&cubox_ui->status);
         cubox_ui->loaded_once = true;
+        cubox_ui->tab = cubox_ui->status.slot ? 1u : 0u; /* offline cache lands in the recent slot */
+        cubox_ui->in_folder = cubox_ui->tab == 1u && cubox_ui->status.folder_id[0];
         if (cubox_ui->status.configured && thingsos_network_connected() && !cubox_ui->status.busy) {
-            if (!cubox_ui->status.folder_count) thingsos_cubox_refresh_folders();
-            else if (!cubox_ui->status.card_count) thingsos_cubox_refresh_list(false);
+            if (!cubox_ui->status.card_count) thingsos_cubox_refresh_list(false);
+            else if (!cubox_ui->status.folder_count) thingsos_cubox_refresh_folders();
         }
     }
 
@@ -181,6 +185,13 @@ static void cubox_start_pair(cubox_view_t ret) {
     if (!cubox_ready()) return;
     thingsos_cubox_status(&cubox_ui->status);
     cubox_ui->pair_return = ret;
+    /* A successful pairing loads the recent list; give it the recent slot. */
+    if (thingsos_cubox_select_slot(0)) {
+        cubox_ui->tab = 0;
+        cubox_ui->in_folder = false;
+        cubox_ui->list_start = 0;
+        strlcpy(app.cubox_query, "", sizeof(app.cubox_query));
+    }
     cubox_ui->pair_generation = cubox_ui->status.connection_serial;
     cubox_ui->view = CUBOX_VIEW_PAIR;
     thingsos_cubox_pair(true);
@@ -232,6 +243,158 @@ static void cubox_poll(void) {
     app.dirty = true;
 }
 
+/* Two tabs: 最近文章 (list slot 0, all folders) and 收藏夹 (folder list, then the chosen
+   folder's articles in list slot 1). Each slot keeps its own filter, keyword and cards. */
+#define CUBOX_TAB_TOP 210
+#define CUBOX_TAB_BOTTOM 296
+#define CUBOX_BAR_TOP 306
+#define CUBOX_BAR_HIT_TOP 300
+#define CUBOX_BAR_HIT_BOTTOM 362
+#define CUBOX_LIST_TOP 378
+#define CUBOX_LIST_STEP 156
+#define CUBOX_LIST_ROWS 4u
+#define CUBOX_FOLDER_TOP 370
+#define CUBOX_FOLDER_STEP 104
+#define CUBOX_FOLDER_ROWS 6u
+#define CUBOX_EMPTY_BUTTON 620
+
+static void cubox_dim(int x, int y, int w, int h) {
+    for (int yy = y; yy < y + h; ++yy) {
+        for (int xx = x; xx < x + w; ++xx) {
+            unsigned char* p = &app.canvas.pixels[(size_t)yy * app.canvas.width + xx];
+            *p = (unsigned char)(255 - (255 - *p) * 9 / 20);
+        }
+    }
+}
+
+/* Inset of a pill end cap of radius r on a row dy (1..r) away from the centre line. */
+static int cubox_cap_inset(int r, int dy) {
+    int i = 0;
+    while (i < r && (2 * r - 2 * i - 1) * (2 * r - 2 * i - 1) + (2 * dy - 1) * (2 * dy - 1) > 4 * r * r) ++i;
+    return i;
+}
+
+static void cubox_chip(const char* text, int x, int y, int w, unsigned size, bool on) {
+    const int h = 46, r = 23;
+    for (int row = 0; row < h; ++row) {
+        int dy = row < r ? r - row : row - r + 1;
+        int outer = cubox_cap_inset(r, dy);
+        thingsos_rect(&app.canvas, x + outer, y + row, w - 2 * outer, 1, 0);
+        if (dy <= r - 2) {
+            int inner = 2 + cubox_cap_inset(r - 2, dy);
+            thingsos_rect(&app.canvas, x + inner, y + row, w - 2 * inner, 1, 255);
+        }
+    }
+    centered_label(text, x + 4, y + 32, size, w - 8);
+    if (!on) return;
+    for (int row = 0; row < h; ++row) {
+        int dy = row < r ? r - row : row - r + 1;
+        int outer = cubox_cap_inset(r, dy);
+        unsigned char* line = &app.canvas.pixels[(size_t)(y + row) * app.canvas.width];
+        for (int xx = x + outer; xx < x + w - outer; ++xx) line[xx] = (unsigned char)(255 - line[xx]);
+    }
+}
+
+static void cubox_folder_icon(int x, int y) {
+    thingsos_rect(&app.canvas, x, y - 6, 14, 2, 0);
+    thingsos_rect(&app.canvas, x, y - 6, 2, 6, 0);
+    thingsos_rect(&app.canvas, x + 12, y - 6, 2, 6, 0);
+    thingsos_rect(&app.canvas, x, y, 34, 26, 0);
+    thingsos_rect(&app.canvas, x + 2, y + 2, 30, 22, 255);
+}
+
+static void cubox_draw_tabs(void) {
+    static const char* const names[2] = {"最近文章", "收藏夹"};
+    for (unsigned t = 0; t < 2u; ++t) {
+        int x = 36 + (int)t * 306;
+        centered_label(names[t], x, 268, 30, 306);
+        if (t == cubox_ui->tab) {
+            centered_label(names[t], x + 1, 268, 30, 306); /* faux bold */
+            thingsos_rect(&app.canvas, x + 73, 283, 160, 6, 0);
+        } else {
+            cubox_dim(x, 224, 306, 56);
+        }
+    }
+    thingsos_rect(&app.canvas, 341, 236, 1, 34, 170);
+    thingsos_rect(&app.canvas, 36, 289, 612, 1, 170);
+}
+
+static void cubox_draw_pager(unsigned cur, unsigned total, const char* next) {
+    char pstr[48];
+    snprintf(pstr, sizeof(pstr), "%u / %u", cur, total);
+    reader_control("上一页", 36, 1006, 190, false);
+    centered_label(pstr, 236, 1046, 24, 212);
+    reader_control(next, 458, 1006, 190, false);
+}
+
+static void cubox_draw_folder_list(const thingsos_cubox_status_t* s) {
+    char info[64] = "";
+    if (s->folder_count) snprintf(info, sizeof(info), "共 %u 个收藏夹", s->folder_count);
+    label(info, 36, 338, 22, 420);
+    bool syncing = s->busy && s->op == THINGSOS_CUBOX_OP_FOLDERS;
+    cubox_chip(syncing ? "同步中…" : "同步列表", 488, CUBOX_BAR_TOP, 160, 22, false);
+    thingsos_rect(&app.canvas, 36, 366, 612, 1, 170);
+
+    if (cubox_ui->folder_start >= s->folder_count) cubox_ui->folder_start = 0;
+    if (!s->folder_count) {
+        centered_label(
+            syncing ? "正在同步收藏夹…" : (s->message[0] ? s->message : "还没有收藏夹，点击“同步列表”"),
+            36, 560, 27, 612);
+    }
+    for (unsigned row = 0; row < CUBOX_FOLDER_ROWS; ++row) {
+        thingsos_cubox_folder_t* f = &cubox_ui->scratch_folder;
+        if (!thingsos_cubox_folder(cubox_ui->folder_start + row, f)) break;
+        int y = CUBOX_FOLDER_TOP + (int)row * CUBOX_FOLDER_STEP;
+        int ix = f->parent_id[0] ? 80 : 36; /* sub-folders indent one level */
+        const char* name = f->name[0] ? f->name : f->nested_name[0] ? f->nested_name : "未命名";
+        char title[200];
+        snprintf(title, sizeof(title), "%s%s", name, f->uncategorized ? " (未分类)" : "");
+        cubox_folder_icon(ix, y + 40);
+        label(title, ix + 56, y + 64, 28, 600 - ix - 56);
+        label(">", 615, y + 64, 26, 30);
+        thingsos_rect(&app.canvas, 36, y + CUBOX_FOLDER_STEP - 1, 612, 1, 200);
+    }
+    unsigned pages = s->folder_count ? (s->folder_count + CUBOX_FOLDER_ROWS - 1u) / CUBOX_FOLDER_ROWS : 1u;
+    cubox_draw_pager(cubox_ui->folder_start / CUBOX_FOLDER_ROWS + 1u, pages, "下一页");
+}
+
+static void cubox_draw_cards(const thingsos_cubox_status_t* s, bool in_folder) {
+    for (unsigned row = 0; row < CUBOX_LIST_ROWS && cubox_ui->list_start + row < s->card_count; ++row) {
+        thingsos_cubox_card_t* card = &cubox_ui->scratch_card;
+        if (!thingsos_cubox_card(cubox_ui->list_start + row, card)) continue;
+        int y = CUBOX_LIST_TOP + (int)row * CUBOX_LIST_STEP;
+        char title_line[320];
+        const char* raw_title = card->title[0] ? card->title
+                              : card->article_title[0] ? card->article_title
+                              : "未命名收藏";
+        snprintf(
+            title_line, sizeof(title_line), "%s%s%s",
+            card->starred ? "★ " : "",
+            card->read ? "" : "● ",
+            raw_title);
+        thingsos_font_size(ui_font(), 26);
+        thingsos_text_string_page(ui_font(), &app.canvas, title_line, strlen(title_line), 0, 36, y + 6, 612, 68, 36);
+
+        char date10[12] = "";
+        if (card->create_time[0]) strlcpy(date10, card->create_time, sizeof(date10));
+        bool show_folder = !in_folder && card->folder_name[0];
+        char meta[320];
+        snprintf(
+            meta, sizeof(meta), "%s%s%s%s%s%s",
+            card->domain[0] ? card->domain : "网页",
+            show_folder ? " · " : "",
+            show_folder ? card->folder_name : "",
+            date10[0] ? " · " : "",
+            date10,
+            card->cached ? " · [已离线]" : "");
+        label(meta, 36, y + 102, 21, 612);
+
+        if (card->description[0]) label(card->description, 36, y + 132, 20, 612);
+        else if (card->tag_summary[0]) label(card->tag_summary, 36, y + 132, 20, 612);
+        thingsos_rect(&app.canvas, 36, y + 150, 612, 1, 200);
+    }
+}
+
 static bool cubox_draw_list(const thingsos_cubox_status_t* s) {
     header("Cubox");
     if (s->configured) {
@@ -241,7 +404,7 @@ static bool cubox_draw_list(const thingsos_cubox_status_t* s) {
 
     if (!s->configured && !s->card_count) {
         centered_label("连接你的 Cubox", 36, 330, 36, 612);
-        centered_label("浏览未读、全部、星标收藏与文件夹，离线图文阅读", 36, 405, 24, 612);
+        centered_label("浏览最近文章与收藏夹，离线图文阅读", 36, 405, 24, 612);
         reader_control("手机扫码配对", 36, 520, 612, true);
         centered_label("支持 cubox.pro 与 cubox.cc API 扩展链接或 Token", 36, 650, 22, 612);
         if (s->message[0]) centered_label(s->message, 36, 730, 22, 612);
@@ -249,88 +412,129 @@ static bool cubox_draw_list(const thingsos_cubox_status_t* s) {
         return true;
     }
 
-    reader_control("未读", 36, 226, 134, s->filter == THINGSOS_CUBOX_FILTER_UNREAD);
-    reader_control("全部", 180, 226, 134, s->filter == THINGSOS_CUBOX_FILTER_ALL);
-    reader_control("星标", 324, 226, 134, s->filter == THINGSOS_CUBOX_FILTER_STARRED);
-    reader_control(app.cubox_query[0] ? "搜索*" : "搜索", 472, 226, 176, app.cubox_query[0] != 0);
-
-    char folder_bar[300];
-    if (app.cubox_query[0]) {
-        snprintf(folder_bar, sizeof(folder_bar), "目录：%s · 词：%s", s->folder_name, app.cubox_query);
-    } else {
-        snprintf(folder_bar, sizeof(folder_bar), "目录：%s >", s->folder_name[0] ? s->folder_name : "全部文件夹");
+    cubox_draw_tabs();
+    if (cubox_ui->tab == 1u && !cubox_ui->in_folder) {
+        cubox_draw_folder_list(s);
+        if (s->message[0] && s->folder_count) label(s->message, 36, 1095, 20, 612);
+        nav();
+        return true;
     }
-    label(folder_bar, 36, 322, 23, 450);
-    label(
-        s->busy ? "同步中…" : (!thingsos_network_connected() || s->offline_mode) ? "离线缓存" : "在线",
-        500, 322, 22, 148);
-    thingsos_rect(&app.canvas, 36, 342, 612, 1, 180);
+
+    bool in_folder = cubox_ui->tab == 1u;
+    bool query = app.cubox_query[0] != 0;
+    if (!in_folder) {
+        cubox_chip("全部", 36, CUBOX_BAR_TOP, 90, 22, s->filter == THINGSOS_CUBOX_FILTER_ALL);
+        cubox_chip("未读", 136, CUBOX_BAR_TOP, 90, 22, s->filter == THINGSOS_CUBOX_FILTER_UNREAD);
+        cubox_chip("星标", 236, CUBOX_BAR_TOP, 90, 22, s->filter == THINGSOS_CUBOX_FILTER_STARRED);
+        char line_state[128];
+        if (query) snprintf(line_state, sizeof(line_state), "词：%s", app.cubox_query);
+        else strlcpy(line_state, s->busy ? "同步中…" : (!thingsos_network_connected() || s->offline_mode) ? "离线缓存" : "在线", sizeof(line_state));
+        label(line_state, 342, 338, 20, 156);
+        cubox_chip(query ? "搜索*" : "搜索", 508, CUBOX_BAR_TOP, 140, 22, query);
+    } else {
+        char crumb[220];
+        snprintf(crumb, sizeof(crumb), "< 收藏夹 / %s", s->folder_name);
+        label(crumb, 36, 338, 24, 296);
+        cubox_chip("全部", 340, CUBOX_BAR_TOP, 72, 20, s->filter == THINGSOS_CUBOX_FILTER_ALL);
+        cubox_chip("未读", 418, CUBOX_BAR_TOP, 72, 20, s->filter == THINGSOS_CUBOX_FILTER_UNREAD);
+        cubox_chip("星标", 496, CUBOX_BAR_TOP, 72, 20, s->filter == THINGSOS_CUBOX_FILTER_STARRED);
+        cubox_chip("搜", 574, CUBOX_BAR_TOP, 74, 22, query);
+    }
+    thingsos_rect(&app.canvas, 36, 366, 612, 1, 170);
 
     if (cubox_ui->list_start >= s->card_count) cubox_ui->list_start = 0;
-
     if (!s->card_count) {
-        centered_label(
-            s->busy ? "正在获取 Cubox 收藏…"
-                    : (s->message[0] ? s->message : "当前筛选下没有收藏"),
-            36, 540, 27, 612);
-        if (app.cubox_query[0]) {
-            reader_control("清空搜索关键词", 162, 620, 360, false);
-        }
+        const char* empty = s->busy ? "正在获取 Cubox 收藏…"
+                          : s->message[0] ? s->message
+                          : (in_folder && (!thingsos_network_connected() || s->offline_mode)) ? "离线状态下该收藏夹没有缓存文章"
+                          : in_folder ? "该收藏夹下没有文章"
+                          : "当前筛选下没有收藏";
+        centered_label(empty, 36, 540, 27, 612);
+        if (query) reader_control("清空搜索关键词", 162, CUBOX_EMPTY_BUTTON, 360, false);
+        else if (in_folder) reader_control("返回收藏夹列表", 162, CUBOX_EMPTY_BUTTON, 360, false);
     } else {
-        for (unsigned row = 0; row < 4 && cubox_ui->list_start + row < s->card_count; ++row) {
-            thingsos_cubox_card_t* card = &cubox_ui->scratch_card;
-            if (!thingsos_cubox_card(cubox_ui->list_start + row, card)) continue;
-            int y = 352 + (int)row * 160;
-            char title_line[320];
-            const char* raw_title = card->title[0] ? card->title
-                                  : card->article_title[0] ? card->article_title
-                                  : "未命名收藏";
-            snprintf(
-                title_line, sizeof(title_line), "%s%s%s",
-                card->starred ? "★ " : "",
-                card->read ? "" : "● ",
-                raw_title);
-            thingsos_font_size(ui_font(), 26);
-            thingsos_text_string_page(ui_font(), &app.canvas, title_line, strlen(title_line), 0, 36, y + 8, 612, 68, 36);
-
-            char date10[12] = "";
-            if (card->create_time[0]) {
-                strlcpy(date10, card->create_time, sizeof(date10));
-            }
-            char meta[320];
-            snprintf(
-                meta, sizeof(meta), "%s%s%s%s%s%s",
-                card->domain[0] ? card->domain : "网页",
-                card->folder_name[0] ? " · " : "",
-                card->folder_name,
-                card->cached ? " · [已离线]" : "",
-                date10[0] ? " · " : "",
-                date10);
-            label(meta, 36, y + 106, 21, 612);
-
-            if (card->description[0]) {
-                label(card->description, 36, y + 138, 20, 612);
-            } else if (card->tag_summary[0]) {
-                label(card->tag_summary, 36, y + 138, 20, 612);
-            }
-            thingsos_rect(&app.canvas, 36, y + 154, 612, 1, 200);
-        }
+        cubox_draw_cards(s, in_folder);
     }
 
-    unsigned total_pages = s->card_count ? (s->card_count + 3u) / 4u : 1u;
-    unsigned cur_page = cubox_ui->list_start / 4u + 1u;
-    bool at_last = cubox_ui->list_start + 4u >= s->card_count;
-    char pstr[48];
-    snprintf(pstr, sizeof(pstr), "%u / %u", cur_page, total_pages);
-    reader_control("上一页", 36, 1006, 190, false);
-    centered_label(pstr, 236, 1046, 24, 212);
-    reader_control(
-        (at_last && s->has_more && thingsos_network_connected()) ? "加载更多" : "下一页",
-        458, 1006, 190, false);
+    unsigned total_pages = s->card_count ? (s->card_count + CUBOX_LIST_ROWS - 1u) / CUBOX_LIST_ROWS : 1u;
+    bool at_last = cubox_ui->list_start + CUBOX_LIST_ROWS >= s->card_count;
+    cubox_draw_pager(
+        cubox_ui->list_start / CUBOX_LIST_ROWS + 1u, total_pages,
+        (at_last && s->has_more && thingsos_network_connected()) ? "加载更多" : "下一页");
 
-    if (s->message[0]) label(s->message, 36, 1095, 20, 612);
+    if (s->message[0] && s->card_count) label(s->message, 36, 1095, 20, 612);
     nav();
     return true;
+}
+
+static void cubox_switch_tab(unsigned tab) {
+    if (tab == cubox_ui->tab) {
+        if (tab == 1u && cubox_ui->in_folder) {
+            cubox_ui->in_folder = false;
+            app.dirty = true;
+        }
+        return;
+    }
+    if (!thingsos_cubox_select_slot(tab)) {
+        say("请等待列表同步完成");
+        return;
+    }
+    cubox_ui->tab_start[cubox_ui->tab] = cubox_ui->list_start;
+    cubox_ui->tab = tab;
+    cubox_ui->list_start = cubox_ui->tab_start[tab];
+    thingsos_cubox_status(&cubox_ui->status);
+    strlcpy(app.cubox_query, cubox_ui->status.query, sizeof(app.cubox_query));
+    const thingsos_cubox_status_t* s = &cubox_ui->status;
+    /* Each tab shows what it already holds; only an empty tab fetches on its own. */
+    if (s->configured && thingsos_network_connected() && !s->busy) {
+        if (tab == 1u && !s->folder_count) thingsos_cubox_refresh_folders();
+        else if (tab == 0u && !s->card_count) thingsos_cubox_refresh_list(false);
+    }
+    app.dirty = true;
+}
+
+static void cubox_open_folder(const thingsos_cubox_folder_t* f) {
+    const char* name = f->name[0] ? f->name : f->nested_name;
+    thingsos_cubox_status(&cubox_ui->status);
+    bool same = !strcmp(cubox_ui->status.folder_id, f->id) && cubox_ui->status.card_count > 0;
+    cubox_ui->in_folder = true;
+    if (!same) {
+        cubox_ui->list_start = 0;
+        app.cubox_query[0] = 0;
+        thingsos_cubox_set_filter(cubox_ui->status.filter, f->id, name, "", true);
+    }
+    app.dirty = true;
+}
+
+static void cubox_page_folders(int dir) {
+    const thingsos_cubox_status_t* s = &cubox_ui->status;
+    if (dir > 0 && cubox_ui->folder_start + CUBOX_FOLDER_ROWS < s->folder_count) {
+        cubox_ui->folder_start += CUBOX_FOLDER_ROWS;
+        app.dirty = true;
+    } else if (dir < 0 && cubox_ui->folder_start > 0) {
+        cubox_ui->folder_start = cubox_ui->folder_start >= CUBOX_FOLDER_ROWS ? cubox_ui->folder_start - CUBOX_FOLDER_ROWS : 0u;
+        app.dirty = true;
+    }
+}
+
+static void cubox_page_cards(int dir) {
+    const thingsos_cubox_status_t* s = &cubox_ui->status;
+    if (dir > 0) {
+        if (cubox_ui->list_start + CUBOX_LIST_ROWS < s->card_count) {
+            cubox_ui->list_start += CUBOX_LIST_ROWS;
+            app.dirty = true;
+        } else if (s->has_more && thingsos_network_connected() && !s->busy) {
+            thingsos_cubox_refresh_list(true);
+            app.dirty = true;
+        }
+    } else if (cubox_ui->list_start > 0) {
+        cubox_ui->list_start = cubox_ui->list_start >= CUBOX_LIST_ROWS ? cubox_ui->list_start - CUBOX_LIST_ROWS : 0u;
+        app.dirty = true;
+    }
+}
+
+static bool cubox_folder_view(void) {
+    return cubox_ui->view == CUBOX_VIEW_LIST && cubox_ui->tab == 1u && !cubox_ui->in_folder;
 }
 
 static void cubox_draw_detail(const thingsos_cubox_status_t* s) {
@@ -407,43 +611,6 @@ static void cubox_draw_detail(const thingsos_cubox_status_t* s) {
     nav();
 }
 
-static void cubox_draw_folders(const thingsos_cubox_status_t* s) {
-    header("选择文件夹");
-    reader_control(s->busy ? "同步中…" : "同步文件夹列表", 36, 226, 612, false);
-
-    unsigned total_items = 1u + s->folder_count;
-    if (cubox_ui->folder_start >= total_items) cubox_ui->folder_start = 0;
-
-    for (unsigned row = 0; row < 5 && cubox_ui->folder_start + row < total_items; ++row) {
-        unsigned idx = cubox_ui->folder_start + row;
-        int y = 312 + (int)row * 130;
-        char title[200];
-        bool selected = false;
-        if (idx == 0) {
-            strlcpy(title, "全部文件夹", sizeof(title));
-            selected = s->folder_id[0] == 0;
-        } else {
-            thingsos_cubox_folder_t* f = &cubox_ui->scratch_folder;
-            if (thingsos_cubox_folder(idx - 1u, f)) {
-                const char* fn = f->nested_name[0] ? f->nested_name : f->name;
-                snprintf(title, sizeof(title), "%s%s", fn[0] ? fn : "未命名", f->uncategorized ? " (未分类)" : "");
-                selected = !strcmp(s->folder_id, f->id);
-            } else {
-                title[0] = 0;
-            }
-        }
-        if (selected) thingsos_rect(&app.canvas, 36, y + 6, 6, 92, 0);
-        label(title, 54, y + 62, 28, 550);
-        label(">", 615, y + 62, 26, 30);
-        thingsos_rect(&app.canvas, 36, y + 116, 612, 1, 190);
-    }
-
-    reader_control("上一页", 36, 1006, 292, false);
-    reader_control("下一页", 356, 1006, 292, false);
-    if (s->message[0]) label(s->message, 36, 1095, 20, 612);
-    nav();
-}
-
 static void cubox_draw_pair(const thingsos_cubox_status_t* s) {
     header("连接 Cubox");
     char line[256];
@@ -502,7 +669,6 @@ static bool cubox_draw(void) {
     const thingsos_cubox_status_t* s = &cubox_ui->status;
 
     if (cubox_ui->view == CUBOX_VIEW_DETAIL) cubox_draw_detail(s);
-    else if (cubox_ui->view == CUBOX_VIEW_FOLDERS) cubox_draw_folders(s);
     else if (cubox_ui->view == CUBOX_VIEW_PAIR) cubox_draw_pair(s);
     else if (cubox_ui->view == CUBOX_VIEW_SETTINGS) cubox_draw_settings(s);
     else cubox_draw_list(s);
@@ -514,10 +680,11 @@ static bool cubox_back(void) {
     if (cubox_ui->view == CUBOX_VIEW_PAIR) {
         thingsos_cubox_pair(false);
         cubox_ui->view = cubox_ui->pair_return;
-    } else if (cubox_ui->view == CUBOX_VIEW_DETAIL || cubox_ui->view == CUBOX_VIEW_FOLDERS ||
-               cubox_ui->view == CUBOX_VIEW_SETTINGS) {
+    } else if (cubox_ui->view == CUBOX_VIEW_DETAIL || cubox_ui->view == CUBOX_VIEW_SETTINGS) {
         cubox_ui->open_after_download = false;
         cubox_ui->view = CUBOX_VIEW_LIST;
+    } else if (cubox_ui->tab == 1u && cubox_ui->in_folder) {
+        cubox_ui->in_folder = false;
     } else {
         navigate(THINGSOS_UI_APPS);
         return true;
@@ -557,47 +724,6 @@ static bool cubox_tap(int x, int y) {
             app.dirty = true;
         } else if (y >= 955 && y < 1027) {
             cubox_ui->view = CUBOX_VIEW_LIST;
-            app.dirty = true;
-        }
-        return true;
-    }
-
-    if (cubox_ui->view == CUBOX_VIEW_FOLDERS) {
-        if (y >= 226 && y < 294) {
-            if (!thingsos_cubox_refresh_folders()) {
-                thingsos_cubox_status(&cubox_ui->status);
-                say(cubox_ui->status.message[0] ? cubox_ui->status.message : "无法刷新文件夹");
-            }
-            app.dirty = true;
-            return true;
-        }
-        if (y >= 312 && y < 962) {
-            unsigned row = (unsigned)(y - 312) / 130u;
-            unsigned idx = cubox_ui->folder_start + row;
-            if (idx == 0) {
-                cubox_ui->list_start = 0;
-                cubox_ui->view = CUBOX_VIEW_LIST;
-                thingsos_cubox_set_filter(s->filter, "", "全部文件夹", app.cubox_query, true);
-                app.dirty = true;
-            } else {
-                thingsos_cubox_folder_t* f = &cubox_ui->scratch_folder;
-                if (thingsos_cubox_folder(idx - 1u, f)) {
-                    const char* fname = f->nested_name[0] ? f->nested_name : f->name;
-                    cubox_ui->list_start = 0;
-                    cubox_ui->view = CUBOX_VIEW_LIST;
-                    thingsos_cubox_set_filter(s->filter, f->id, fname, app.cubox_query, true);
-                    app.dirty = true;
-                }
-            }
-            return true;
-        }
-        if (y >= 1006 && y < 1078) {
-            unsigned total = 1u + s->folder_count;
-            if (x < 342) {
-                cubox_ui->folder_start = cubox_ui->folder_start >= 5u ? cubox_ui->folder_start - 5u : 0u;
-            } else if (cubox_ui->folder_start + 5u < total) {
-                cubox_ui->folder_start += 5u;
-            }
             app.dirty = true;
         }
         return true;
@@ -678,7 +804,8 @@ static bool cubox_tap(int x, int y) {
     /* CUBOX_VIEW_LIST */
     if (s->configured && y >= 120 && y < 195) {
         if (x >= 460 && x < 554) {
-            if (!thingsos_cubox_refresh_list(false)) {
+            bool ok = cubox_folder_view() ? thingsos_cubox_refresh_folders() : thingsos_cubox_refresh_list(false);
+            if (!ok) {
                 thingsos_cubox_status(&cubox_ui->status);
                 say(cubox_ui->status.message[0] ? cubox_ui->status.message : "刷新失败");
             }
@@ -697,59 +824,82 @@ static bool cubox_tap(int x, int y) {
         return true;
     }
 
-    if (y >= 226 && y < 290) {
-        if (x >= 36 && x < 464) {
-            thingsos_cubox_filter_t nf =
-                x < 175 ? THINGSOS_CUBOX_FILTER_UNREAD
-                : x < 319 ? THINGSOS_CUBOX_FILTER_ALL
-                          : THINGSOS_CUBOX_FILTER_STARRED;
-            cubox_ui->list_start = 0;
-            thingsos_cubox_set_filter(nf, s->folder_id, s->folder_name, app.cubox_query, true);
+    if (y >= CUBOX_TAB_TOP && y < CUBOX_TAB_BOTTOM) {
+        if (x >= 36 && x < 648) cubox_switch_tab(x < 342 ? 0u : 1u);
+        return true;
+    }
+
+    if (cubox_folder_view()) {
+        if (y >= CUBOX_BAR_HIT_TOP && y < CUBOX_BAR_HIT_BOTTOM && x >= 488) {
+            if (!thingsos_cubox_refresh_folders()) {
+                thingsos_cubox_status(&cubox_ui->status);
+                say(cubox_ui->status.message[0] ? cubox_ui->status.message : "无法刷新收藏夹");
+            }
             app.dirty = true;
-        } else if (x >= 472 && x < 648) {
+        } else if (y >= CUBOX_FOLDER_TOP && y < CUBOX_FOLDER_TOP + (int)CUBOX_FOLDER_ROWS * CUBOX_FOLDER_STEP) {
+            unsigned row = (unsigned)(y - CUBOX_FOLDER_TOP) / (unsigned)CUBOX_FOLDER_STEP;
+            if (thingsos_cubox_folder(cubox_ui->folder_start + row, &cubox_ui->scratch_folder)) {
+                cubox_open_folder(&cubox_ui->scratch_folder);
+            }
+        } else if (y >= 1006 && y < 1078) {
+            if (x < 240) cubox_page_folders(-1);
+            else if (x >= 440) cubox_page_folders(1);
+        }
+        return true;
+    }
+
+    bool in_folder = cubox_ui->tab == 1u;
+    if (y >= CUBOX_BAR_HIT_TOP && y < CUBOX_BAR_HIT_BOTTOM) {
+        int nf = -1;
+        bool search = false;
+        if (!in_folder) {
+            if (x >= 36 && x < 131) nf = THINGSOS_CUBOX_FILTER_ALL;
+            else if (x >= 131 && x < 231) nf = THINGSOS_CUBOX_FILTER_UNREAD;
+            else if (x >= 231 && x < 331) nf = THINGSOS_CUBOX_FILTER_STARRED;
+            else if (x >= 500 && x < 648) search = true;
+        } else {
+            if (x >= 36 && x < 334) {
+                cubox_ui->in_folder = false;
+                app.dirty = true;
+                return true;
+            }
+            if (x >= 336 && x < 415) nf = THINGSOS_CUBOX_FILTER_ALL;
+            else if (x >= 415 && x < 493) nf = THINGSOS_CUBOX_FILTER_UNREAD;
+            else if (x >= 493 && x < 571) nf = THINGSOS_CUBOX_FILTER_STARRED;
+            else if (x >= 571 && x < 648) search = true;
+        }
+        if (search) {
             feature_editor(5);
+        } else if (nf >= 0) {
+            cubox_ui->list_start = 0;
+            thingsos_cubox_set_filter((thingsos_cubox_filter_t)nf, s->folder_id, s->folder_name, app.cubox_query, true);
+            app.dirty = true;
         }
         return true;
     }
 
-    if (y >= 292 && y < 346 && x < 500) {
-        cubox_ui->folder_start = 0;
-        cubox_ui->view = CUBOX_VIEW_FOLDERS;
-        if (!s->folder_count && thingsos_network_connected() && s->configured && !s->busy) {
-            thingsos_cubox_refresh_folders();
+    if (!s->card_count && y >= CUBOX_EMPTY_BUTTON && y < CUBOX_EMPTY_BUTTON + 72 && x >= 162 && x < 522) {
+        if (app.cubox_query[0]) {
+            app.cubox_query[0] = 0;
+            cubox_search_submit();
+        } else if (in_folder) {
+            cubox_ui->in_folder = false;
+            app.dirty = true;
         }
-        app.dirty = true;
         return true;
     }
 
-    if (!s->card_count && app.cubox_query[0] && y >= 620 && y < 692) {
-        app.cubox_query[0] = 0;
-        cubox_search_submit();
-        return true;
-    }
-
-    if (y >= 352 && y < 992 && s->card_count > 0) {
-        unsigned row = (unsigned)(y - 352) / 160u;
-        unsigned idx = cubox_ui->list_start + row;
-        if (thingsos_cubox_card(idx, &cubox_ui->scratch_card)) {
+    if (y >= CUBOX_LIST_TOP && y < CUBOX_LIST_TOP + (int)CUBOX_LIST_ROWS * CUBOX_LIST_STEP && s->card_count > 0) {
+        unsigned row = (unsigned)(y - CUBOX_LIST_TOP) / (unsigned)CUBOX_LIST_STEP;
+        if (thingsos_cubox_card(cubox_ui->list_start + row, &cubox_ui->scratch_card)) {
             cubox_open_detail(&cubox_ui->scratch_card);
         }
         return true;
     }
 
     if (y >= 1006 && y < 1078) {
-        if (x < 240) {
-            cubox_ui->list_start = cubox_ui->list_start >= 4u ? cubox_ui->list_start - 4u : 0u;
-            app.dirty = true;
-        } else if (x >= 440) {
-            if (cubox_ui->list_start + 4u < s->card_count) {
-                cubox_ui->list_start += 4u;
-                app.dirty = true;
-            } else if (s->has_more && thingsos_network_connected() && !s->busy) {
-                thingsos_cubox_refresh_list(true);
-                app.dirty = true;
-            }
-        }
+        if (x < 240) cubox_page_cards(-1);
+        else if (x >= 440) cubox_page_cards(1);
         return true;
     }
 
@@ -758,34 +908,10 @@ static bool cubox_tap(int x, int y) {
 
 static bool cubox_scroll(int dy) {
     if (app.page != THINGSOS_UI_CUBOX || !cubox_ready()) return false;
-    const thingsos_cubox_status_t* s = &cubox_ui->status;
-    if (cubox_ui->view == CUBOX_VIEW_LIST) {
-        if (dy > 0) {
-            if (cubox_ui->list_start + 4u < s->card_count) {
-                cubox_ui->list_start += 4u;
-                app.dirty = true;
-            } else if (s->has_more && thingsos_network_connected() && !s->busy) {
-                thingsos_cubox_refresh_list(true);
-                app.dirty = true;
-            }
-        } else if (cubox_ui->list_start > 0) {
-            cubox_ui->list_start = cubox_ui->list_start >= 4u ? cubox_ui->list_start - 4u : 0u;
-            app.dirty = true;
-        }
-        return true;
-    }
-    if (cubox_ui->view == CUBOX_VIEW_FOLDERS) {
-        unsigned total = 1u + s->folder_count;
-        if (dy > 0 && cubox_ui->folder_start + 5u < total) {
-            cubox_ui->folder_start += 5u;
-            app.dirty = true;
-        } else if (dy < 0 && cubox_ui->folder_start > 0) {
-            cubox_ui->folder_start = cubox_ui->folder_start >= 5u ? cubox_ui->folder_start - 5u : 0u;
-            app.dirty = true;
-        }
-        return true;
-    }
-    return false;
+    if (cubox_ui->view != CUBOX_VIEW_LIST) return false;
+    if (cubox_folder_view()) cubox_page_folders(dy > 0 ? 1 : -1);
+    else cubox_page_cards(dy > 0 ? 1 : -1);
+    return true;
 }
 
 static bool cubox_key(thingsos_key_action_t action) {
@@ -793,7 +919,7 @@ static bool cubox_key(thingsos_key_action_t action) {
     if (action == THINGSOS_KEY_MENU) {
         return cubox_back();
     }
-    if (cubox_ui->view == CUBOX_VIEW_LIST || cubox_ui->view == CUBOX_VIEW_FOLDERS) {
+    if (cubox_ui->view == CUBOX_VIEW_LIST) {
         if (action == THINGSOS_KEY_NEXT) return cubox_scroll(1);
         if (action == THINGSOS_KEY_PREVIOUS) return cubox_scroll(-1);
     }

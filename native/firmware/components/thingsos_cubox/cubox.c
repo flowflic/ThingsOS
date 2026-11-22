@@ -56,13 +56,27 @@ typedef enum {
     JOB_ARCHIVE
 } cubox_job_t;
 
+/* List state of the inactive tab slot (0 = recent, 1 = folder). */
+typedef struct {
+    thingsos_cubox_filter_t filter;
+    unsigned card_count;
+    unsigned page;
+    bool has_more;
+    bool offline_mode;
+    char folder_id[THINGSOS_CUBOX_ID_LEN];
+    char folder_name[THINGSOS_CUBOX_NAME_LEN];
+    char query[97];
+} cubox_slot_t;
+
 typedef struct {
     SemaphoreHandle_t lock;
     thingsos_cubox_status_t status;
     cubox_config_t config;
     cubox_config_t pending;
     thingsos_cubox_folder_t folders[THINGSOS_CUBOX_FOLDER_MAX];
-    thingsos_cubox_card_t cards[CUBOX_CARDS_MAX];
+    thingsos_cubox_card_t* cards;     /* active slot */
+    thingsos_cubox_card_t* cards_alt; /* inactive slot */
+    cubox_slot_t alt;
     thingsos_cubox_detail_t detail;
     bool detail_valid;
     char last_card_id[THINGSOS_CUBOX_ID_LEN];
@@ -624,13 +638,16 @@ static bool fetch_cards_sync(const char* server, const char* token, bool append_
         s->status.card_count);
     ++s->status.serial;
     unsigned total = s->status.card_count;
+    thingsos_cubox_card_t* list = s->cards;
+    bool cacheable = s->status.slot == 0 && !s->status.query[0];
     xSemaphoreGive(s->lock);
 
     free(batch);
 
     xSemaphoreTake(thingsos_io_lock, portMAX_DELAY);
-    if (ensure_cubox_dirs_locked()) {
-        thingsos_cubox_save_cards(CUBOX_LIST_CACHE, s->cards, total);
+    /* Offline cache mirrors the recent tab only; select_slot refuses to swap while this job runs. */
+    if (cacheable && ensure_cubox_dirs_locked()) {
+        thingsos_cubox_save_cards(CUBOX_LIST_CACHE, list, total);
     }
     xSemaphoreGive(thingsos_io_lock);
     return true;
@@ -1223,6 +1240,49 @@ static void new_pair_code_locked(void) {
     s->status.pair_seconds = (unsigned)(CUBOX_PAIR_TTL_US / 1000000LL);
 }
 
+static void swap_slot_locked(void) {
+    cubox_slot_t cur = {
+        .filter = s->status.filter,
+        .card_count = s->status.card_count,
+        .page = s->status.page,
+        .has_more = s->status.has_more,
+        .offline_mode = s->status.offline_mode,
+    };
+    strlcpy(cur.folder_id, s->status.folder_id, sizeof(cur.folder_id));
+    strlcpy(cur.folder_name, s->status.folder_name, sizeof(cur.folder_name));
+    strlcpy(cur.query, s->status.query, sizeof(cur.query));
+    s->status.filter = s->alt.filter;
+    s->status.card_count = s->alt.card_count;
+    s->status.page = s->alt.page;
+    s->status.has_more = s->alt.has_more;
+    s->status.offline_mode = s->alt.offline_mode;
+    strlcpy(s->status.folder_id, s->alt.folder_id, sizeof(s->status.folder_id));
+    strlcpy(s->status.folder_name, s->alt.folder_name, sizeof(s->status.folder_name));
+    strlcpy(s->status.query, s->alt.query, sizeof(s->status.query));
+    s->alt = cur;
+    thingsos_cubox_card_t* t = s->cards;
+    s->cards = s->cards_alt;
+    s->cards_alt = t;
+    s->status.slot ^= 1u;
+    ++s->status.serial;
+}
+
+bool thingsos_cubox_select_slot(unsigned slot) {
+    if (!s || slot > 1u) return false;
+    xSemaphoreTake(s->lock, portMAX_DELAY);
+    bool ok = true;
+    if (s->status.slot != slot) {
+        /* A running list job writes into the active slot; never swap under it. */
+        if (s->status.busy && (s->job == JOB_LIST || s->job == JOB_MORE || s->job == JOB_VERIFY)) {
+            ok = false;
+        } else {
+            swap_slot_locked();
+        }
+    }
+    xSemaphoreGive(s->lock);
+    return ok;
+}
+
 void thingsos_cubox_init(void) {
     if (s) return;
     s = heap_caps_calloc(1, sizeof(*s), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1230,10 +1290,22 @@ void thingsos_cubox_init(void) {
         ESP_LOGE(TAG, "PSRAM allocation failed");
         return;
     }
+    s->cards = heap_caps_calloc(CUBOX_CARDS_MAX, sizeof(*s->cards), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s->cards_alt = heap_caps_calloc(CUBOX_CARDS_MAX, sizeof(*s->cards_alt), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s->cards || !s->cards_alt) {
+        ESP_LOGE(TAG, "PSRAM card list allocation failed");
+        free(s->cards);
+        free(s->cards_alt);
+        free(s);
+        s = NULL;
+        return;
+    }
     s->lock = xSemaphoreCreateMutex();
     strlcpy(s->status.server, "cubox.pro", sizeof(s->status.server));
     strlcpy(s->status.folder_name, "全部文件夹", sizeof(s->status.folder_name));
-    s->status.filter = THINGSOS_CUBOX_FILTER_UNREAD;
+    s->status.filter = THINGSOS_CUBOX_FILTER_ALL;
+    s->alt.filter = THINGSOS_CUBOX_FILTER_ALL;
+    strlcpy(s->alt.folder_name, "全部文件夹", sizeof(s->alt.folder_name));
     if (cubox_config_load(&s->config)) {
         s->status.configured = true;
         s->status.config_phase = THINGSOS_CUBOX_CONFIG_READY;
@@ -1371,6 +1443,8 @@ bool thingsos_cubox_disconnect(void) {
     s->status.folder_count = 0;
     s->status.card_count = 0;
     s->status.has_more = false;
+    s->alt.card_count = 0;
+    s->alt.has_more = false;
     s->detail_valid = false;
     strlcpy(s->status.message, "已断开 Cubox 连接", sizeof(s->status.message));
     ++s->status.serial;
@@ -1554,6 +1628,7 @@ void thingsos_cubox_load_offline(void) {
         memcpy(s->folders, fl, fc * sizeof(*fl));
         s->status.folder_count = fc;
     }
+    if (s->status.slot != 0) swap_slot_locked(); /* the cache belongs to the recent tab */
     memcpy(s->cards, cl, cc * sizeof(*cl));
     s->status.card_count = cc;
     s->status.has_more = false;

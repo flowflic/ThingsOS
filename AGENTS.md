@@ -39,6 +39,7 @@ D:\crossmux\ThingsOS stays the source of truth for shared application changes.
 - Use build/ for artifacts. Do not commit unless requested.
 
 - User version policy (2026-10-12): preserve the current version on routine fixes and builds. Change version numbers only when the user explicitly requests a version upgrade.
+- User reading-refresh preference (2026-11-17): 尽量避免完整灰阶刷新，保持平滑阅读的感觉。日常阅读、章节加载退出和阅读菜单交互优先采用低闪波形、区域刷新或现有扫描内的白底维护；不要为消除残影默认增加整屏 GC16 黑白清理。启动、休眠、显式全刷和显示故障恢复所需的安全清理仍须保留。
 
 ## Metalio USB flashing workflow (validated 2026-10-31)
 

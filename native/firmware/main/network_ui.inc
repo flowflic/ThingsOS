@@ -450,8 +450,9 @@ static void wifi_candidates_draw(void) {
     }
 }
 static void wifi_password_paint(bool layout,bool force) {
-    static thingsos_input_t previous;
-    static char previous_message[sizeof(app.message)];
+    /* Repaint diff state for the Wi-Fi password page: UI-only, PSRAM. */
+    static EXT_RAM_BSS_ATTR thingsos_input_t previous;
+    static EXT_RAM_BSS_ATTR char previous_message[sizeof(app.message)];
     static unsigned previous_editing;
     bool field=force || previous.cursor!=app.input.cursor || previous.secret!=app.input.secret ||
         previous.reveal!=app.input.reveal || strcmp(previous.text,app.input.text);
@@ -475,9 +476,9 @@ static void wifi_password_draw(void) {
         label("我的想法",36,275,26,612);network_button("取消",36,560,298,false);network_button("保存",350,560,298,true);
         wifi_password_paint(true,true);return;
     }
-    header(search?(app.input_return==THINGSOS_UI_FILES?"搜索文件":app.input_return==THINGSOS_UI_CUBOX?"搜索 Cubox 收藏":app.input_return==THINGSOS_UI_WEIDU?"搜索微读书名":"搜索书名"):app.editing==1?"连接 WiFi":"WiFi 名称");
-    label(search?(app.input_return==THINGSOS_UI_FILES?"按文件名筛选当前目录":app.input_return==THINGSOS_UI_CUBOX?"按标题或正文关键词筛选 Cubox":"输入部分书名，找到想读的书"):app.editing==1?app.wifi_ssid:"手动添加隐藏网络",36,195,24,612);
-    label(search?(app.input_return==THINGSOS_UI_FILES?"文件名关键词":app.input_return==THINGSOS_UI_CUBOX?"Cubox 搜索词":"书名关键词"):app.editing==1?"网络密码":"网络名称",36,275,26,612);
+    header(search?(app.input_return==THINGSOS_UI_FILES?"搜索文件":app.input_return==THINGSOS_UI_CUBOX?"搜索 Cubox 收藏":app.input_return==THINGSOS_UI_FLOMO?"搜索 flomo 笔记":app.input_return==THINGSOS_UI_WEIDU?"搜索微读书名":"搜索书名"):app.editing==1?"连接 WiFi":"WiFi 名称");
+    label(search?(app.input_return==THINGSOS_UI_FILES?"按文件名筛选当前目录":app.input_return==THINGSOS_UI_CUBOX?"按标题或正文关键词筛选 Cubox":app.input_return==THINGSOS_UI_FLOMO?"多个关键词用空格分隔，需同时匹配":"输入部分书名，找到想读的书"):app.editing==1?app.wifi_ssid:"手动添加隐藏网络",36,195,24,612);
+    label(search?(app.input_return==THINGSOS_UI_FILES?"文件名关键词":app.input_return==THINGSOS_UI_CUBOX?"Cubox 搜索词":app.input_return==THINGSOS_UI_FLOMO?"flomo 搜索词":"书名关键词"):app.editing==1?"网络密码":"网络名称",36,275,26,612);
     network_button("取消",36,560,298,false);
     network_button(search?"搜索":app.editing==1?"连接":"下一步",350,560,298,true);
     wifi_password_paint(true,true);

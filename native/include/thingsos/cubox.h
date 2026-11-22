@@ -35,6 +35,7 @@ typedef struct {
     unsigned folder_count;
     unsigned card_count;
     unsigned page;
+    unsigned slot; /* list slot: 0 = recent tab, 1 = folder tab */
     unsigned pair_seconds;
     unsigned dl_done;
     unsigned dl_total;
@@ -69,6 +70,9 @@ bool thingsos_cubox_set_filter(
     const char* folder_name,
     const char* query,
     bool fetch_online);
+/* Switch the active list slot; each slot keeps its own filter, cards and paging.
+   Returns false while a list job is running. */
+bool thingsos_cubox_select_slot(unsigned slot);
 bool thingsos_cubox_refresh_folders(void);
 bool thingsos_cubox_refresh_list(bool more);
 bool thingsos_cubox_fetch_detail(const char* card_id);

@@ -4,6 +4,7 @@
    hardware calls go through metalio_bsp (TCA9555/TPS65185/FT6336U/BQ27220/
    CX25601N/PCF8563) instead of the Read Pico PMU. */
 #include "board.h"
+#include "esp_attr.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_sleep.h"
@@ -84,7 +85,8 @@ static uint32_t font_bytes;
 static sc7a20h_handle_t tilt_sensor;
 static bool tilt_powered;
 static int64_t tilt_retry_at,tilt_capture_at,tilt_trace_until;
-static thingsos_tilt_queue_t tilt_samples;
+/* Sampler-task producer, UI consumer; never touched from an ISR. */
+static EXT_RAM_BSS_ATTR thingsos_tilt_queue_t tilt_samples;
 /* Input-task wrist-turn detector; the UI claims at most one intent, see tilt.h. */
 static thingsos_tilt_stream_t tilt_stream;
 static bool tilt_landscape;
@@ -943,12 +945,9 @@ bool thingsos_board_touch(thingsos_touch_t* t,uint64_t* sampled_ms) {
     } else {*sampled_ms=(uint64_t)esp_timer_get_time()/1000;ok=touch_read(t);}
     xSemaphoreGive(touch_access);return ok;
 }
-unsigned thingsos_board_battery(void) {
-    /* The gauge filter wants about one sample per second at most. */
-    static int64_t sampled_at;static int last=-1;
-    int64_t now=esp_timer_get_time();
-    if(last<0 || now-sampled_at>=1000000){sampled_at=now;int v=metalio_battery_percent();if(v>=0)last=v;}
-    return last<0?0:(unsigned)last;
+int thingsos_board_battery(void) {
+    /* Snapshot of the BSP's 1 Hz sampler; -1 while settling after boot/wake. */
+    return metalio_battery_percent();
 }
 bool thingsos_board_font(thingsos_font_t* font) {
     if (!font_data) {
@@ -1134,8 +1133,10 @@ esp_err_t thingsos_board_sd_info(thingsos_sd_info_t* info) { return metalio_sd_g
 esp_err_t thingsos_board_sd_remount(void) { return metalio_sd_remount(); }
 esp_err_t thingsos_board_sd_sync(void) { return metalio_sd_sync(); }
 esp_err_t thingsos_board_suspend(const thingsos_canvas_t* sleep_frame) {
+    thingsos_board_trace_stage(THINGSOS_TRACE_SUSPEND_BEGIN);
     thingsos_diag_event(DIAG_SLEEP,0,metalio_battery_percent(),metalio_charge_state(),0,0);
     thingsos_diag_poll(true);
+    metalio_battery_pause();
     if(!thingsos_board_tilt_active(false))return ESP_FAIL;
     thingsos_board_touch_buffer(false);
     esp_err_t err=thingsos_board_present_lock_transition(sleep_frame,true);
@@ -1158,16 +1159,20 @@ esp_err_t thingsos_board_suspend(const thingsos_canvas_t* sleep_frame) {
             if(err!=ESP_OK)return err;
         }
     }
+    thingsos_board_trace_stage(THINGSOS_TRACE_SUSPEND_DONE);
     return ESP_OK;
 }
 esp_err_t thingsos_board_resume(void) {
+    thingsos_board_trace_stage(THINGSOS_TRACE_RESUME_BEGIN);
     thingsos_diag_event(DIAG_WAKE,0,esp_sleep_get_wakeup_causes(),metalio_charge_state(),0,0);
+    metalio_battery_restart();
     esp_err_t err=metalio_touch_wake();
     if(err!=ESP_OK)thingsos_diag_event(DIAG_FAILURE,1,1,0,(int)err,0);
     keys_poll_at=0;
     if(frontlight_mixed)metalio_frontlight_mix(frontlight_mode!=0,frontlight_level,frontlight_warmth);
     else metalio_frontlight_set((metalio_fl_mode_t)frontlight_mode,frontlight_level);
     full_refresh=true;
+    thingsos_board_trace_stage(THINGSOS_TRACE_RESUME_DONE);
     return err;
 }
 #include "sleep_wait.inc"

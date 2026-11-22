@@ -34,6 +34,9 @@ typedef struct {
 esp_err_t thingsos_network_scan_start(void);
 esp_err_t thingsos_network_scan_poll(thingsos_wifi_result_t*,size_t,size_t*,bool* done);
 bool thingsos_network_connected(void);
+/* Monotonic count of station disconnect events; compare two reads to see
+   whether the link dropped during an operation. */
+unsigned thingsos_network_link_losses(void);
 bool thingsos_network_connecting(void);
 void thingsos_network_address(bool hotspot,char* out,size_t capacity);
 esp_err_t thingsos_network_mode(bool hotspot);

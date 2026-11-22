@@ -5,7 +5,7 @@
 #ifndef ONLINE_ROOT
 #define ONLINE_ROOT "/sdcard/.thingsos/weidu"
 #endif
-static struct {
+static EXT_RAM_BSS_ATTR struct {
     thingsos_weidu_book_t book;
     bool opening,waiting,running,upgrading_images;
     bool check_current_images,repairing_current_images,refresh_current_images;

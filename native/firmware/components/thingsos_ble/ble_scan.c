@@ -2,11 +2,13 @@
 /* Independent NimBLE central. Radio/session state belongs to the NimBLE host;
    UI commands and decoded key presses cross bounded queues. No canvas access. */
 #include "thingsos/ble_discovery.h"
+#include "thingsos/memory_trace.h"
 #include "thingsos/bluetooth_protocol.h"
 #ifdef THINGSOS_BLE_HOST_TEST
 #include "ble_service_host.h"
 #else
 #include "nimble/nimble_port.h"
+#include "esp_bt.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_sm.h"
@@ -37,7 +39,8 @@ static thingsos_ble_status_t* published_state;
 #define visible (*published_state)
 static portMUX_TYPE guard=portMUX_INITIALIZER_UNLOCKED;
 static QueueHandle_t commands,inputs;
-static atomic_bool initialized,synced;
+static atomic_bool initialized,synced,running,suspended,controller_ready;
+static bool resume_automatic; /* reconnect the last device after wake */
 static struct ble_npl_callout timer;
 static uint16_t connection=BLE_HS_CONN_HANDLE_NONE;
 static uint32_t generation;
@@ -55,8 +58,23 @@ static bool io_take(bool* taken){
  if(xSemaphoreTake(thingsos_io_lock,pdMS_TO_TICKS(3000))!=pdTRUE)return false;*taken=true;return true;
 }
 static void io_give(bool taken){if(taken)xSemaphoreGive(thingsos_io_lock);}
+static unsigned state_flags(const thingsos_ble_status_t* s){
+ return (s->scanning?1u:0u)|(s->connected?2u:0u)|(s->hid_ready?4u:0u);
+}
+/* Memory sampler: 1 running (not idle/error), 2 connected, 4 HID ready. */
+unsigned thingsos_ble_flags(void){
+ if(!published_state)return 0;
+ portENTER_CRITICAL(&guard);
+ unsigned flags=(visible.connected?2u:0u)|(visible.hid_ready?4u:0u)|
+  (visible.phase!=THINGSOS_BLE_IDLE&&visible.phase!=THINGSOS_BLE_ERROR?1u:0u);
+ portEXIT_CRITICAL(&guard);
+ return flags;
+}
 static void publish(const char* text){
  if(text)snprintf(state.message,sizeof(state.message),"%s",text);
+ /* Trace phase/link transitions only; RSSI and list updates also publish. */
+ static unsigned traced_phase=~0u,traced_flags=~0u;unsigned flags=state_flags(&state);
+ if((unsigned)state.phase!=traced_phase||flags!=traced_flags){traced_phase=(unsigned)state.phase;traced_flags=flags;thingsos_memory_trace("ble-state",(int)state.phase,(int)flags);}
  state.generation=generation;++state.serial;portENTER_CRITICAL(&guard);visible=state;portEXIT_CRITICAL(&guard);
  ESP_LOGI("ThingsOS_ble","phase=%u scanning=%d connected=%d hid=%d saved=%u found=%u",(unsigned)state.phase,state.scanning,state.connected,state.hid_ready,state.saved_count,state.count);
 }
@@ -85,6 +103,7 @@ static bool busy(void){return state.phase==THINGSOS_BLE_CONNECTING||state.phase=
 static void* token(void){return (void*)(uintptr_t)generation;}
 static bool current(uint16_t conn,void* arg){return conn==connection&&(uint32_t)(uintptr_t)arg==generation;}
 static void schedule_reconnect(void){
+ if(atomic_load(&suspended))return;
  if(!manual_disconnect&&state.automatic&&valid_device(&state.last)&&reconnect_attempts<3){static const unsigned wait[]={2000,5000,10000};reconnect_at=clock_ms()+wait[reconnect_attempts];}
  if(reconnect_at)ble_npl_callout_reset(&timer,ble_npl_time_ms_to_ticks32(100));
 }
@@ -188,7 +207,8 @@ static void process_commands(void){
  }
 }
 static void tick(struct ble_npl_event* ev){
- (void)ev;if(atomic_load(&synced)){
+ (void)ev;if(atomic_load(&suspended))return;
+ if(atomic_load(&synced)){
   process_commands();uint64_t time=clock_ms();
   if(busy() && (time>=deadline||time>=hard_deadline)){
    if(state.phase==THINGSOS_BLE_DISCONNECTING){state.phase=THINGSOS_BLE_ERROR;state.hid_ready=false;xQueueReset(inputs);publish("断开未确认，请重试断开");}
@@ -203,6 +223,48 @@ static void reset_host(int reason){
  (void)reason;atomic_store(&synced,false);connection=BLE_HS_CONN_HANDLE_NONE;++generation;state.scanning=state.connected=state.hid_ready=state.bonded=false;state.pairing=THINGSOS_BLE_PAIR_NONE;state.phase=THINGSOS_BLE_ERROR;xQueueReset(inputs);hid_reset();publish("低功耗蓝牙已重置，请重新连接");
 }
 static void host_task(void* p){(void)p;nimble_port_run();vTaskDelete(NULL);}
+/* The S31 controller pools need ~36 KB of INTERNAL|DMA memory, which WiFi and
+   audio consume after boot. Allocate them once (controller_ready) and keep
+   them for the whole boot: sleep and failures only stop the host and disable
+   the controller, and a later start re-enables it without allocating. */
+static int stack_start(bool* low_memory){
+ *low_memory=false;
+ if(atomic_load(&controller_ready)){
+  if(esp_bt_controller_enable(ESP_BT_MODE_BLE)!=ESP_OK)return BLE_HS_EUNKNOWN;
+  if(esp_nimble_init()!=ESP_OK){esp_bt_controller_disable();return BLE_HS_EUNKNOWN;}
+  return 0;
+ }
+ /* SDK 6.1 aborts while cleaning up an early pool allocation failure. Check
+    the DMA heap under the caller's I/O lock before entering that path. */
+ unsigned caps=MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT;
+ size_t available=heap_caps_get_free_size(caps),largest=heap_caps_get_largest_free_block(caps);
+ ESP_LOGI("ThingsOS_ble","Controller init budget: dma_free=%u dma_largest=%u internal_free=%u",(unsigned)available,(unsigned)largest,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+ thingsos_memory_trace("ble-controller-init",0,0);
+ /* Data-driven budget (memtrace 2026-11-22 + 20 earlier inits): controller+host
+    keep <=37,164 B of main SRAM, taken mostly out of the largest block (31-35
+    KiB of it), and this reading still includes the 6 KiB ble_init stack that
+    is freed right after. 56 KiB total leaves ~26 KiB after init (earlier
+    successful starts left 30-34 KiB); 36 KiB contiguous covers the pool. The
+    old 64/24 KiB rule refused a field case with 62.1/38.9 KiB (68.7 KiB free
+    outside this task) and was the weaker check on contiguity. A ~33 KiB pool
+    is still refused before the SDK assert path seen on 2026-11-17. */
+ if(available<56u*1024u||largest<36u*1024u){*low_memory=true;thingsos_memory_trace("ble-controller-refused",0,BLE_HS_ENOMEM);return BLE_HS_ENOMEM;}
+ /* Measure the init peak, not just the steady state: the local-minimum
+    window makes minimum_free report the low point during nimble_port_init. */
+ bool window=heap_caps_monitor_local_minimum_free_size_start()==ESP_OK;
+ int rc=nimble_port_init();
+ size_t low=heap_caps_get_minimum_free_size(caps),after=heap_caps_get_free_size(caps),after_largest=heap_caps_get_largest_free_block(caps);
+ if(window)heap_caps_monitor_local_minimum_free_size_stop();
+ if(!rc)atomic_store(&controller_ready,true);
+ ESP_LOGI("ThingsOS_ble","Controller init peak: dma_before=%u largest_before=%u dma_low=%u dma_after=%u largest_after=%u peak_use=%u steady_use=%u window=%d rc=%d",
+  (unsigned)available,(unsigned)largest,(unsigned)low,(unsigned)after,(unsigned)after_largest,
+  (unsigned)(available>low?available-low:0),(unsigned)(available>after?available-after:0),window,rc);
+ /* subject = peak bytes drawn from main SRAM during init, result = steady use. */
+ thingsos_memory_trace("ble-controller-peak",(int)(available>low?available-low:0),(int)(available>after?available-after:0));
+ thingsos_memory_trace("ble-controller-ready",0,rc);
+ return rc;
+}
+static void stack_stop(void){esp_nimble_deinit();esp_bt_controller_disable();}
 void ble_store_config_init(void);
 static void initialize(void* p){
  (void)p;int rc;bool taken;
@@ -211,14 +273,7 @@ static void initialize(void* p){
  bool low_memory=false;
  if(!io_take(&taken))rc=BLE_HS_ESTORE_FAIL;
  else{
-  /* S31 controller pools require INTERNAL|DMA, unlike the host's PSRAM
-     buffers. SDK 6.1 aborts while cleaning up an early pool allocation failure.
-     Check the DMA heap under the same I/O lock before entering that path. */
-  unsigned caps=MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT;
-  size_t available=heap_caps_get_free_size(caps),largest=heap_caps_get_largest_free_block(caps);
-  ESP_LOGI("ThingsOS_ble","Controller init budget: dma_free=%u dma_largest=%u internal_free=%u",(unsigned)available,(unsigned)largest,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
-  low_memory=available<64u*1024u||largest<24u*1024u;
-  rc=low_memory?BLE_HS_ENOMEM:nimble_port_init();if(!rc)ble_store_config_init();io_give(taken);
+  rc=stack_start(&low_memory);if(!rc)ble_store_config_init();io_give(taken);
  }
  if(rc){xQueueReset(commands);atomic_store(&initialized,false);state.scanning=false;state.phase=THINGSOS_BLE_ERROR;publish(low_memory?"低功耗 DMA 不足，音频搜索仍可用":"低功耗蓝牙启动失败，请重试");}
  else{
@@ -230,9 +285,9 @@ static void initialize(void* p){
   /* The SDK void wrapper silently ignores xTaskCreate failure. Own/check this
      task so a missing host cannot strand commands or masquerade as scanning. */
   if(xTaskCreate(host_task,"nimble_host",CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE,NULL,configMAX_PRIORITIES-4,NULL)!=pdPASS){
-   if(io_take(&taken)){ble_npl_callout_deinit(&timer);nimble_port_deinit();io_give(taken);}
+   if(io_take(&taken)){ble_npl_callout_deinit(&timer);stack_stop();io_give(taken);}
    xQueueReset(commands);atomic_store(&initialized,false);state.phase=THINGSOS_BLE_ERROR;publish("低功耗任务内存不足，请稍后重试");
-  }else ESP_LOGI("ThingsOS_ble","Controller/host started: dma_free=%u dma_largest=%u internal_free=%u",(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));
+  }else{atomic_store(&running,true);thingsos_memory_trace("ble-started",0,0);ESP_LOGI("ThingsOS_ble","Controller/host started: dma_free=%u dma_largest=%u internal_free=%u",(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT),(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));}
  }
  vTaskDelete(NULL);
 }
@@ -246,6 +301,10 @@ void thingsos_ble_init(void){
  load_records();publish(NULL);
  if(state.automatic&&valid_device(&state.last)){command_t cmd={.kind=CMD_CONNECT,.value=true,.device=state.last};xQueueSend(commands,&cmd,0);
   bool expected=false;if(atomic_compare_exchange_strong(&initialized,&expected,true)&&xTaskCreate(initialize,"ble_init",6144,NULL,3,NULL)!=pdPASS)atomic_store(&initialized,false);
+ }else if(state.saved_count){
+  /* A saved device without automatic reconnect: still claim the controller
+     memory while boot has it, so a later manual connect cannot fail on DMA. */
+  bool expected=false;if(atomic_compare_exchange_strong(&initialized,&expected,true)&&xTaskCreate(initialize,"ble_init",6144,NULL,3,NULL)!=pdPASS)atomic_store(&initialized,false);
  }
 }
 static bool submit(command_t* cmd){
@@ -256,6 +315,42 @@ static bool submit(command_t* cmd){
  }
  if(atomic_load(&synced))ble_npl_callout_reset(&timer,ble_npl_time_ms_to_ticks32(1));
  return true;
+}
+/* Light sleep with the S31 BLE controller running hangs core 0 inside the
+   controller with interrupts masked; the interrupt watchdog then resets the
+   chip (diagnostics 2026-11-21: IWDT PC in r_sym_ble_*, both cores frozen).
+   The controller has no sleep support in this configuration, so stop the host
+   and the controller before the board suspends and restart the automatic
+   reconnect after wake. Runs on the UI task, which may hold thingsos_io_lock;
+   io_take() is re-entrant for the holder. */
+bool thingsos_ble_suspend(void){
+ if(!mutable_state||!published_state||!commands||!inputs)return true;
+ /* A first initialization needs the I/O lock the caller may hold and gives up
+    after 3 s; wait for it to finish or fail instead of sleeping under it. */
+ for(unsigned i=0;i<45&&atomic_load(&initialized)&&!atomic_load(&running);++i)vTaskDelay(pdMS_TO_TICKS(100));
+ if(atomic_load(&initialized)&&!atomic_load(&running))return false;
+ if(!atomic_load(&running)){resume_automatic=false;return true;}
+ resume_automatic=state.automatic&&valid_device(&state.last);
+ atomic_store(&suspended,true);
+ nimble_port_stop(); /* terminates links; returns after the host task leaves nimble_port_run() */
+ ble_npl_callout_deinit(&timer);
+ bool taken;bool locked=io_take(&taken);stack_stop();if(locked)io_give(taken); /* pools stay allocated */
+ thingsos_memory_trace("ble-stopped",0,0);
+ atomic_store(&synced,false);atomic_store(&running,false);atomic_store(&initialized,false);
+ connection=BLE_HS_CONN_HANDLE_NONE;++generation;reconnect_at=0;reconnect_attempts=0;forget_pending=false;
+ state.scanning=state.connected=state.hid_ready=state.bonded=false;state.pairing=THINGSOS_BLE_PAIR_NONE;state.phase=THINGSOS_BLE_IDLE;
+ xQueueReset(commands);xQueueReset(inputs);hid_reset();
+ publish("息屏时已关闭低功耗蓝牙");
+ ESP_LOGI("ThingsOS_ble","Controller stopped for sleep; reconnect after wake=%d",resume_automatic);
+ return true;
+}
+void thingsos_ble_resume(void){
+ if(!atomic_load(&suspended))return;
+ atomic_store(&suspended,false);
+ if(!resume_automatic)return;
+ resume_automatic=false;
+ command_t cmd={.kind=CMD_CONNECT,.value=true,.device=state.last};
+ if(!submit(&cmd))publish("唤醒后低功耗蓝牙启动失败，请重试");
 }
 bool thingsos_ble_scan(bool start){if(!start&&!atomic_load(&initialized))return true;command_t cmd={.kind=start?CMD_SCAN:CMD_STOP};return submit(&cmd);}
 bool thingsos_ble_connect(const thingsos_ble_device_t* d){if(!valid_device(d))return false;command_t cmd={.kind=CMD_CONNECT,.device=*d};return submit(&cmd);}

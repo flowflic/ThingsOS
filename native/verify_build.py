@@ -88,7 +88,7 @@ for project in ('firmware','rescue'):
         assert 'CONFIG_SPIRAM_IGNORE_NOTFOUND=y' not in config, 'Main firmware requires PSRAM for network and TLS'
         assert 'CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y' in config
         assert 'CONFIG_ESP_WIFI_STATIC_TX_BUFFER=y' in config
-        assert 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576' in config
+        assert 'CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480' in config
         assert 'CONFIG_COMPILER_STACK_CHECK_MODE_STRONG=y' in config
         assert 'CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y' in config, 'TLS must not compete for fragmented internal RAM'
         assert 'CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y' not in config
@@ -155,7 +155,7 @@ assert 'wifi_scan_pending && !app.wifi_scan_running && !app.dirty' in network_ui
 report = {'scope':'Independent module integration development build','version':version,'firmware_ready':False,
     'wifi_page_scan_async':True,'wifi_scan_after_first_frame':True,'wifi_scan_cache_ms':30000,
     'ap_ssid':'ThingsOS','ap_password_bytes':8,
-    'font_gray_pool_psram_bytes':raster_pool,'main_stack_bytes':24576,'prefetch_stack_budget_bytes':prefetch_budget,'target_raster_stack_frames':raster_stack_frames,
+    'font_gray_pool_psram_bytes':raster_pool,'main_stack_bytes':20480,'prefetch_stack_budget_bytes':prefetch_budget,'target_raster_stack_frames':raster_stack_frames,
     'image_decode_psram_only':True,'wallpaper_decoder_live_budget_bytes':3*1024*1024,
     'wallpaper_compressed_input_limit_bytes':1024*1024,'usb_default_flash_complete':True,
     'reader_default_px':46,'reader_stagger_full_pixels':True,'reader_full_refresh_stagger_gc16':False,

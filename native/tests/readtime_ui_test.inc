@@ -46,26 +46,35 @@ static void readtime_controller_test(void) {
     host_wall_time=1794002400;wd_rt_ui_day=wd_rt_display_day();app.dirty=false;
     uint64_t activity=app.activity_at;host_wall_time+=86400;wd_rt_day_poll();
     CHECK(app.dirty&&app.activity_at==activity);host_wall_time=0;
-    CHECK(wd_tap(100,1025)&&app.wd_rt_panel);starts=host_weidu_calls;
+    /* Pico 0.4.3 offline-readtime page: entering requests a transition refresh;
+       the status card is not a control; the single action button (y 890..962)
+       asks for QR authorization while the channel is unauthorized. */
+    app.transition_refresh=false;
+    CHECK(wd_tap(100,1025)&&app.wd_rt_panel&&app.transition_refresh);starts=host_weidu_calls;
+    snapshot("weread-rt-need-auth");
     CHECK(wd_rt_tap(100,270)&&app.wd_time_on&&app.wd_rt_on&&host_weidu_calls==starts);
-    CHECK(strstr(wd_rt_action(&host_rt_status),"授权"));
-    CHECK(wd_rt_tap(100,855)&&host_weidu_action==WD_DEVICE_RT_AUTH);
+    CHECK(wd_rt_tap(100,926)&&host_weidu_action==WD_DEVICE_RT_AUTH);
     CHECK(!wd_draw());readtime_auth_result(WD_CANCELLED);
     CHECK(app.wd_time_on&&app.wd_rt_on&&!app.wd_rt_auth_pending);
-    CHECK(wd_rt_tap(100,855));readtime_auth_result(WD_ERROR);CHECK(app.wd_time_on&&app.wd_rt_on);
+    CHECK(wd_rt_tap(100,926));readtime_auth_result(WD_ERROR);CHECK(app.wd_time_on&&app.wd_rt_on);
     CHECK(weidu_begin(WD_DEVICE_COVERS,NULL));
-    CHECK(wd_rt_tap(100,855)&&app.weidu_deferred);
+    CHECK(wd_rt_tap(100,926)&&app.weidu_deferred);
     weidu_poll();CHECK(!app.weidu_deferred&&host_weidu_action==WD_DEVICE_RT_AUTH);
     host_rt_status.authorized=true;host_rt_status.expired=false;host_rt_status.error=WD_OK;
     readtime_auth_result(WD_READY);CHECK(app.wd_time_on&&app.wd_rt_on);
     app.weidu_covers_pending=false;
     host_rt_status.queue.pending=3690;host_rt_status.queue.unknown=60;
     snapshot("weread-unified-details");
-    CHECK(wd_rt_tap(100,855)&&app.wd_rt_details);snapshot("weidu-readtime-unknown-help");
+    {unsigned px=app.ui_px;app.ui_px=50;snapshot("weread-rt-ready-large");app.ui_px=px;}
+    CHECK(wd_rt_tap(100,926)&&app.wd_rt_details);snapshot("weidu-readtime-unknown-help");
     capacitive_key(THINGSOS_KEY_PREVIOUS);CHECK(!app.wd_rt_details&&app.wd_rt_panel);
+    /* The "待确认记录" metrics cell also opens the explanation; its own button returns. */
+    CHECK(wd_rt_tap(500,640)&&app.wd_rt_details);
+    CHECK(wd_rt_tap(340,926)&&!app.wd_rt_details&&app.wd_rt_panel);
     host_rt_status.blocked=true;unsigned resumes=host_rt_resumes;
-    CHECK(wd_rt_tap(100,855)&&!host_rt_status.blocked&&host_rt_resumes==resumes+1);
-    CHECK(wd_rt_tap(590,150)&&!app.wd_rt_panel);
+    CHECK(wd_rt_tap(100,926)&&!host_rt_status.blocked&&host_rt_resumes==resumes+1);
+    app.transition_refresh=false;
+    CHECK(wd_rt_tap(590,150)&&!app.wd_rt_panel&&app.transition_refresh);
     CHECK(wd_tap(100,845)&&!app.wd_time_on&&!app.wd_rt_on);
     CHECK(host_rt_status.queue.pending==3690&&host_rt_status.queue.unknown==60);
     CHECK(wd_tap(100,845)&&app.wd_time_on&&app.wd_rt_on);

@@ -35,10 +35,25 @@ int main(void){
  CHECK(!host_ble_port_inits&&!atomic_load(&initialized)&&!commands->count&&state.phase==THINGSOS_BLE_ERROR&&!state.scanning);
  host_ble_dma_free=96u*1024u;host_ble_dma_largest=20u*1024u;CHECK(thingsos_ble_scan(true));host_ble_initializer(NULL);
  CHECK(!host_ble_port_inits&&!atomic_load(&initialized)&&!commands->count);
- host_ble_dma_largest=48u*1024u;host_ble_host_task_fail=true;CHECK(thingsos_ble_scan(true));host_ble_initializer(NULL);
- CHECK(host_ble_port_inits==1&&host_ble_port_deinits==1&&!atomic_load(&initialized)&&!commands->count&&state.phase==THINGSOS_BLE_ERROR);
+ CHECK(!host_ble_peak_windows); /* refused before init: no peak window */
+ /* 2026-11-22 field case just under the old 64 KiB total stays refused only
+    below the measured 56 KiB budget; 35 KiB contiguous is too fragmented. */
+ host_ble_dma_free=55u*1024u;host_ble_dma_largest=48u*1024u;CHECK(thingsos_ble_scan(true));host_ble_initializer(NULL);
+ CHECK(!host_ble_port_inits&&!atomic_load(&initialized)&&!commands->count);
+ host_ble_dma_free=96u*1024u;host_ble_dma_largest=35u*1024u;CHECK(thingsos_ble_scan(true));host_ble_initializer(NULL);
+ CHECK(!host_ble_port_inits&&!atomic_load(&initialized)&&!commands->count&&!host_ble_peak_windows);
+ /* The measured field case 62,135 / 38,900 B now starts the controller. */
+ host_ble_dma_free=62135u;host_ble_dma_largest=38900u;host_ble_host_task_fail=true;CHECK(thingsos_ble_scan(true));host_ble_initializer(NULL);
+ /* A failed host task disables the controller but keeps its DMA pools. */
+ CHECK(host_ble_port_inits==1&&!host_ble_port_deinits&&host_ble_disables==1&&host_ble_host_deinits==1&&atomic_load(&controller_ready));
+ CHECK(host_ble_peak_windows==1); /* the real init is measured once */
+ CHECK(!atomic_load(&initialized)&&!commands->count&&state.phase==THINGSOS_BLE_ERROR);
  host_ble_host_task_fail=false;
- CHECK(thingsos_ble_scan(true)&&host_ble_initializer);host_ble_initializer(NULL);CHECK(ble_hs_cfg.sm_bonding&&ble_hs_cfg.sm_sc&&ble_hs_cfg.sm_io_cap==BLE_HS_IO_DISPLAY_YESNO);
+ /* Restart reuses the allocated controller even when DMA is now short. */
+ host_ble_dma_free=16u*1024u;
+ CHECK(thingsos_ble_scan(true)&&host_ble_initializer);host_ble_initializer(NULL);
+ CHECK(host_ble_port_inits==1&&host_ble_enables==1&&host_ble_host_inits==1&&atomic_load(&running));
+ host_ble_dma_free=96u*1024u;CHECK(ble_hs_cfg.sm_bonding&&ble_hs_cfg.sm_sc&&ble_hs_cfg.sm_io_cap==BLE_HS_IO_DISPLAY_YESNO);
  ble_hs_cfg.sync_cb();CHECK(state.scanning);void* old_scan=host_ble_scan_arg;
  CHECK(thingsos_ble_scan(false)&&thingsos_ble_scan(true));tick(NULL);CHECK(state.scanning&&host_ble_scan_arg!=old_scan);
  struct ble_gap_event event={.type=BLE_GAP_EVENT_DISC_COMPLETE};gap_event(&event,old_scan);CHECK(state.scanning);
@@ -73,6 +88,21 @@ int main(void){
  host_ble_blob[24]^=1;state.saved_count=0;memset(&state.last,0,sizeof(state.last));load_records();CHECK(!state.saved_count);host_ble_blob[24]^=1;
  host_ble_io=false;CHECK(locked_write(0,&value)==BLE_HS_ESTORE_FAIL);host_ble_io=true;
  state.phase=THINGSOS_BLE_IDLE;state.connected=false;reconnect_at=0;unsigned timer_resets=host_ble_timer_resets;tick(NULL);CHECK(host_ble_timer_resets==timer_resets); /* no idle 10 Hz polling */
+ /* Light sleep: host and controller stop before suspend; wake reconnects the last device. */
+ state.automatic=true;state.last=device;CHECK(valid_device(&state.last)&&atomic_load(&running)&&atomic_load(&initialized));
+ unsigned disables=host_ble_disables;state.connected=true;connection=host_ble_conn;
+ CHECK(thingsos_ble_suspend());
+ CHECK(host_ble_port_stops==1&&host_ble_disables==disables+1&&!host_ble_port_deinits&&!atomic_load(&initialized)&&!atomic_load(&running)&&atomic_load(&suspended));
+ CHECK(!state.connected&&connection==BLE_HS_CONN_HANDLE_NONE&&state.phase==THINGSOS_BLE_IDLE&&resume_automatic);
+ schedule_reconnect();CHECK(!reconnect_at); /* nothing re-arms the radio while suspended */
+ host_ble_initializer=NULL;thingsos_ble_resume();CHECK(!atomic_load(&suspended)&&host_ble_initializer&&commands->count==1);
+ unsigned inits=host_ble_port_inits,enables=host_ble_enables,connects=host_ble_connects;host_ble_initializer(NULL);
+ CHECK(host_ble_port_inits==inits&&host_ble_enables==enables+1&&atomic_load(&running)); /* re-enable, no new DMA pools */
+ ble_hs_cfg.sync_cb();CHECK(host_ble_connects==connects+1&&state.phase==THINGSOS_BLE_CONNECTING&&thingsos_ble_same(&state.current,&state.last));
+ /* Without automatic reconnect, wake leaves BLE off; a stopped stack suspends as a no-op. */
+ state.automatic=false;state.phase=THINGSOS_BLE_IDLE;CHECK(thingsos_ble_suspend()&&host_ble_port_stops==2&&!resume_automatic);
+ host_ble_initializer=NULL;thingsos_ble_resume();CHECK(!host_ble_initializer&&!atomic_load(&initialized));
+ CHECK(thingsos_ble_suspend()&&host_ble_port_stops==2);thingsos_ble_resume();CHECK(!host_ble_initializer);
  puts("PASS: production BLE scan generations, dynamic/confirmed passkeys, encrypted GATT/CCC readiness, key edges, stale callbacks, deadlines, reconnect bounds, bond deletion and durable records");
  free(hid);free(commands->data);free(commands);free(inputs->data);free(inputs);free(mutable_state);free(published_state);return 0;
 }

@@ -36,6 +36,11 @@ void thingsos_font_close(thingsos_font_t* font);
 bool thingsos_font_size(thingsos_font_t* font, unsigned size);
 bool thingsos_font_weight(thingsos_font_t* font, unsigned weight);
 void thingsos_rect(thingsos_canvas_t* canvas, int x, int y, int w, int h, unsigned char shade);
+/* Filled rectangle with circular corners of the given radius (clamped to half
+   the shorter side). Rows are spans of thingsos_rect, so clipping and the
+   transposed text view behave the same. */
+void thingsos_round_rect(thingsos_canvas_t* canvas, int x, int y, int w, int h, int radius,
+                         unsigned char shade);
 int thingsos_glyph(
     thingsos_font_t* font, thingsos_canvas_t* canvas, uint32_t cp, int x, int baseline);
 void thingsos_label(
@@ -84,6 +89,10 @@ typedef struct {
     int x, y, line;
     unsigned size;
     bool active, heading, paragraph_ink, paragraph_head;
+    /* Justification of the line being laid out when the layout paused. */
+    int just_y, just_slack, just_n, just_k;
+    bool just_line;
+    int just_tail, just_squeezed, line_glyphs, force_keep;
 } thingsos_text_cursor_t;
 size_t thingsos_text_page_resume(
     thingsos_font_t*, thingsos_canvas_t*, const thingsos_chapter_t*, size_t,

@@ -20,7 +20,7 @@ typedef struct {
     thingsos_audio_state_t painted_audio;
     thingsos_ui_page_t painted_page;
 } app_media_ui_t;
-static app_media_ui_t app_media;
+static EXT_RAM_BSS_ATTR app_media_ui_t app_media;
 static bool app_controls_wifi_return;
 /* Bluetooth page opened from the control center (bluetooth_ui.inc). */
 static bool app_controls_bt_return;
@@ -60,6 +60,7 @@ static esp_err_t app_audio_present(void) {
 #ifdef THINGSOS_HOST_UI
 static char host_media_root[512];
 #endif
+#define APP_LAUNCHER_PITCH 200
 static void app_outline(int x,int y,int w,int h){
     thingsos_rect(&app.canvas,x,y,w,2,0);thingsos_rect(&app.canvas,x,y+h-2,w,2,0);
     thingsos_rect(&app.canvas,x,y,2,h,0);thingsos_rect(&app.canvas,x+w-2,y,2,h,0);
@@ -78,6 +79,20 @@ static void app_icon_bitmap(const uint8_t* packed,unsigned size,int left,int top
     }
 }
 static void app_icon(unsigned type,int left,int top){
+    if(type==10){
+        /* flomo mark: a ring whose top runs into a slanted bar, with a second
+           slanted bar above. Filled per pixel in a 307x242 design space
+           (ring centre 80,160, outer radius 80, inner 38), scaled to 70 px. */
+        const int w=70,h=55,ox=left+54-w/2,oy=top+54-h/2;
+        for(int iy=0;iy<h;++iy)for(int ix=0;ix<w;++ix){
+            int X=ix*307/w,Y=iy*242/h,dx=X-80,dy=Y-160,d2=dx*dx+dy*dy;
+            bool ring=d2<=80*80&&d2>=38*38;
+            bool low=Y>=73&&Y<=120&&X>=80&&X<=265-(Y-73)*28/47;
+            bool up=Y<=46&&X>=157-Y*27/46&&X<=307-Y*27/46;
+            if(ring||low||up)thingsos_rect(&app.canvas,ox+ix,oy+iy,1,1,0);
+        }
+        return;
+    }
     if(type==9){
         /* Isometric cube outline representing Cubox. */
         int cx=left+54,cy=top+54;
@@ -219,6 +234,9 @@ static bool app_audio_yield_for_weidu(void){return app_audio_yield_paused("WeRea
 static bool app_audio_yield_for_cubox(void){
     return !thingsos_network_wifi_busy()&&app_audio_yield_paused("Cubox");
 }
+static bool app_audio_yield_for_flomo(void){
+    return !thingsos_network_wifi_busy()&&app_audio_yield_paused("flomo");
+}
 static void app_music_select(size_t index){
     if(index>=app_media.music_count)return;
     app_media.selected=index;char path[512];snprintf(path,sizeof(path),"/sdcard/music/%s",app_media.music[index].name);
@@ -310,6 +328,7 @@ static void app_enter(thingsos_ui_page_t page){
     }
     if(page==THINGSOS_UI_FILES){app_files_open("/sdcard");return;}
     if(page==THINGSOS_UI_CUBOX){cubox_enter();return;}
+    if(page==THINGSOS_UI_FLOMO){flomo_enter();return;}
     if(page==THINGSOS_UI_RECORDER)app_audio_scan(true);
     if(page==THINGSOS_UI_MUSIC)app_audio_scan(false);
     if(page==THINGSOS_UI_WALLPAPER){app.wallpaper_step=0;app.wallpaper_start=0;}
@@ -391,9 +410,10 @@ static bool app_draw(void){
     if(ima_draw())return true;
     if(app.page==THINGSOS_UI_APPS){
         /* User refinement: launcher has no large heading, swipe hint or SD size. */
-        const char* names[]={"传输","网络","文件管理","录音","音乐","闹钟","系统","壁纸","Cubox"};
-        const unsigned icons[]={0,1,2,3,4,6,7,8,9};
-        for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i){int x=78+(int)(i%3)*210,y=150+(int)(i/3)*233;app_icon_tile(icons[i],x,y);centered_label(names[i],36+(int)(i%3)*210,y+161,29,192);}
+        /* Ten apps: four rows at a 200 px pitch keep the audio strip at y>=957 clear. */
+        const char* names[]={"传输","网络","文件管理","录音","音乐","闹钟","系统","壁纸","Cubox","flomo"};
+        const unsigned icons[]={0,1,2,3,4,6,7,8,9,10};
+        for(unsigned i=0;i<sizeof(names)/sizeof(names[0]);++i){int x=78+(int)(i%3)*210,y=150+(int)(i/3)*APP_LAUNCHER_PITCH;app_icon_tile(icons[i],x,y);centered_label(names[i],36+(int)(i%3)*210,y+161,29,192);}
         if(app_launcher_audio_visible()){
             thingsos_rect(&app.canvas,36,957,612,1,0);label(app.audio.state==THINGSOS_AUDIO_RECORDING||app.audio.state==THINGSOS_AUDIO_RECORD_PAUSED?"录音进行中":"音频播放",48,1002,24,550);
             label(app_basename(app.audio.path),48,1047,25,550);
@@ -496,9 +516,9 @@ static bool app_tap(int x,int y){
     if(app.page!=THINGSOS_UI_APPS&&x<90&&y>=74&&y<200&&app_back())return true;
     if(y>=1098)return false;
     if(app.page==THINGSOS_UI_APPS){
-        if(y>=150&&y<796&&x>=36&&x<648){unsigned column=(unsigned)(x-36)/210,row=(unsigned)(y-150)/233,index=row*3+column;
-            const thingsos_ui_page_t pages[]={THINGSOS_UI_TRANSFER,THINGSOS_UI_WIFI,THINGSOS_UI_FILES,THINGSOS_UI_RECORDER,THINGSOS_UI_MUSIC,THINGSOS_UI_ALARM,THINGSOS_UI_SYSTEM,THINGSOS_UI_WALLPAPER,THINGSOS_UI_CUBOX};
-            if(index<sizeof(pages)/sizeof(pages[0])&&x<36+(int)column*210+192&&y<150+(int)row*233+180)app_enter(pages[index]);}
+        if(y>=150&&y<150+4*APP_LAUNCHER_PITCH&&x>=36&&x<648){unsigned column=(unsigned)(x-36)/210,row=(unsigned)(y-150)/APP_LAUNCHER_PITCH,index=row*3+column;
+            const thingsos_ui_page_t pages[]={THINGSOS_UI_TRANSFER,THINGSOS_UI_WIFI,THINGSOS_UI_FILES,THINGSOS_UI_RECORDER,THINGSOS_UI_MUSIC,THINGSOS_UI_ALARM,THINGSOS_UI_SYSTEM,THINGSOS_UI_WALLPAPER,THINGSOS_UI_CUBOX,THINGSOS_UI_FLOMO};
+            if(index<sizeof(pages)/sizeof(pages[0])&&x<36+(int)column*210+192&&y<150+(int)row*APP_LAUNCHER_PITCH+180)app_enter(pages[index]);}
         else if(y>=950&&app_launcher_audio_visible())app_enter(app.audio.state==THINGSOS_AUDIO_RECORDING||app.audio.state==THINGSOS_AUDIO_RECORD_PAUSED?THINGSOS_UI_RECORDER:THINGSOS_UI_MUSIC);
         return true;
     }
@@ -598,5 +618,6 @@ static void app_poll(void){
         if(!transfer.active){app.wifi_pending_off=false;if(app.wifi_enabled)app_wifi_toggle();}}
     ima_poll();
     cubox_poll();
+    flomo_poll();
     bt_ui_poll();
 }

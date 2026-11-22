@@ -318,7 +318,7 @@ static void feature_editor(unsigned which) {
         : which == 0   ? app.wifi_ssid
         : which == 1 ? app.wifi_password
         : which == 3 ? app.rename_name
-        : which == 5 ? (app.page==THINGSOS_UI_CUBOX?app.cubox_query:app.page==THINGSOS_UI_WEIDU?app.weidu_query:app.page==THINGSOS_UI_FILES?app.file_query:app.library_query)
+        : which == 5 ? (app.page==THINGSOS_UI_CUBOX?app.cubox_query:app.page==THINGSOS_UI_FLOMO?app.flomo_query:app.page==THINGSOS_UI_WEIDU?app.weidu_query:app.page==THINGSOS_UI_FILES?app.file_query:app.library_query)
         : which == 4 ? ""
                      : stamp,
         which == 6   ? THINGSOS_ANNOTATION_THOUGHT
@@ -628,6 +628,9 @@ static bool feature_tap(int x, int y) {
                     if(app.input_return==THINGSOS_UI_CUBOX) {
                         strlcpy(app.cubox_query,app.input.text,sizeof(app.cubox_query));
                         cubox_search_submit();
+                    } else if(app.input_return==THINGSOS_UI_FLOMO) {
+                        strlcpy(app.flomo_query,app.input.text,sizeof(app.flomo_query));
+                        flomo_search_submit();
                     } else if(app.input_return==THINGSOS_UI_WEIDU) {
                         strlcpy(app.weidu_query,app.input.text,sizeof(app.weidu_query));
                         weidu_search_submit();

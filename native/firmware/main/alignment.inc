@@ -82,7 +82,7 @@ typedef struct {
     char wallpaper_book[THINGSOS_RECORD_PATH_BYTES], wallpaper_image[THINGSOS_RECORD_PATH_BYTES];
     char wallpaper_title[192];
 } preferences_snapshot_t;
-static preferences_snapshot_t saved_preferences;
+static EXT_RAM_BSS_ATTR preferences_snapshot_t saved_preferences; /* UI-only compare/copy around NVS saves */
 static bool saved_preferences_valid;
 static void preferences_snapshot(preferences_snapshot_t* p) {
     memset(p, 0, sizeof(*p));
@@ -454,7 +454,8 @@ static bool alignment_draw(void) {
                 label(power_actions[i],48,y+52,28,548);
                 label(">",612,y+52,28,24);
             }
-            snprintf(line, sizeof(line), "电量 %u%% · %s", app.battery, thingsos_board_charge());
+            if(app.battery>=0)snprintf(line, sizeof(line), "电量 %d%% · %s", app.battery, thingsos_board_charge());
+            else snprintf(line, sizeof(line), "电量校准中 · %s", thingsos_board_charge());
             thingsos_rect(&app.canvas,36,1013,612,1,170);
             label(line,48,1060,24,588);
             nav();

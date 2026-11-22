@@ -519,6 +519,13 @@ static bool fields(void* raw, const char* key, const char* text, char type, unsi
 static bool cancelled(thingsos_weidu_client_t* c) {
     return c->io.cancelled && c->io.cancelled(c->io.context);
 }
+/* Re-association after an AP disconnect takes ~1.5 s; a fixed short backoff
+   would spend the replay while the station still has no IP. */
+#define WD_LINK_WAIT_MS 6000u
+static void retry_pause(thingsos_weidu_client_t* c, unsigned ms) {
+    if (c->io.wait_ms) c->io.wait_ms(c->io.context, ms);
+    if (c->io.wait_link && !cancelled(c)) c->io.wait_link(c->io.context, WD_LINK_WAIT_MS);
+}
 static void publish(thingsos_weidu_client_t* c, thingsos_weidu_phase_t phase, const char* text) {
     /* State and progress only; text can contain titles, login QR or credentials. */
     if(phase!=c->status.phase || phase==WD_ERROR)
@@ -542,7 +549,7 @@ static thingsos_weidu_error_t request(
         e=c->io.http(c->io.context,method,endpoint,body,referer,out,limit,&c->session);
         thingsos_diag_event(DIAG_NET_RETRY,1,attempt+1,3,e,0);
         if((e!=WD_NETWORK && e!=WD_DNS) || attempt==2)break;
-        if(c->io.wait_ms)c->io.wait_ms(c->io.context,500u*(attempt+1));
+        retry_pause(c,500u*(attempt+1));
     }
     return e;
 }
@@ -608,7 +615,7 @@ thingsos_weidu_error_t thingsos_weidu_login(thingsos_weidu_client_t* c) {
             e = WD_CANCEL;
             break;
         }
-        if (attempt < 2 && c->io.wait_ms) c->io.wait_ms(c->io.context, 1000u * (attempt + 1));
+        if (attempt < 2) retry_pause(c, 1000u * (attempt + 1));
     }
     if (e != WD_OK || !thingsos_weidu_token(p->uid, 128)) {
         free(p);
@@ -869,12 +876,17 @@ static thingsos_weidu_error_t generate_epub(thingsos_weidu_client_t* c,const cha
 static thingsos_weidu_error_t install_epub(
     thingsos_weidu_client_t* c, const char* from, const char* temporary, const char* final) {
     if (!validate_epub(from)) return WD_PROTOCOL;
+    /* 4 KiB copy buffer in PSRAM: this runs at the bottom of the worker's
+       download chain, whose 12 KiB internal stack also carries VFS/TLS. */
+    enum { INSTALL_BLOCK = 4096 };
+    unsigned char* block = thingsos_psram_alloc(INSTALL_BLOCK);
+    if (!block) return WD_MEMORY;
     FILE *in = fopen(from, "rb"), *out = fopen(temporary, "wb");
-    unsigned char block[4096];
     size_t n;
     bool ok = in && out;
-    while (ok && (n = fread(block, 1, sizeof(block), in)))
+    while (ok && (n = fread(block, 1, INSTALL_BLOCK, in)))
         ok = fwrite(block, 1, n, out) == n && !cancelled(c);
+    free(block);
     if (in) {
         if (ferror(in)) ok = false;
         fclose(in);
@@ -900,6 +912,8 @@ static thingsos_weidu_error_t download_failure(thingsos_weidu_client_t* c,things
 typedef struct {
     char raw[640], toc[600], body[1024], dir[600], final[600], temporary[640];
     char b[160], ch[160], referer[400], ps[128], shard[3][600], decoded[640];
+    /* download_run's own paths: off the worker stack, which also carries TLS. */
+    char marker[700], previous_table[620], pending_toc[640];
 } download_workspace_t;
 /* Reuse a saved chapter only when the previous table names the same chapter id
    and its text file is still a plausible size; the plain/markup flag comes from
@@ -957,7 +971,7 @@ static thingsos_weidu_error_t fetch_chapter(thingsos_weidu_client_t* c,
                 e=c->io.reader?c->io.reader(c->io.context,w->referer,w->ps,sizeof(w->ps),&c->session):WD_PROTOCOL;
                 thingsos_diag_event(DIAG_NET_RETRY,2,attempt+1,3,e,0);
                 if((e!=WD_NETWORK && e!=WD_DNS) || attempt==2)break;
-                if(c->io.wait_ms)c->io.wait_ms(c->io.context,500u*(attempt+1));
+                retry_pause(c,500u*(attempt+1));
             }
         }
         if (e != WD_OK) break;
@@ -1176,14 +1190,13 @@ static thingsos_weidu_error_t download_run(
     wd_mkdir(w->dir);
     /* Only an interrupted run resumes: the marker survives a failure and is
        cleared on success, so asking to cache again always re-fetches. */
-    char marker[700];
-    snprintf(marker, sizeof(marker), "%s/download.inprogress", w->dir);
-    FILE* progress = fopen(marker, "rb");
+    snprintf(w->marker, sizeof(w->marker), "%s/download.inprogress", w->dir);
+    FILE* progress = fopen(w->marker, "rb");
     bool has_stream=thingsos_weidu_stream_path(c->root,book->id,w->raw,sizeof(w->raw)) && stream_exists(w->raw);
     bool resumable = progress != NULL || online || has_stream;
     if (progress)
         fclose(progress);
-    else if (!online && (progress = fopen(marker, "wb")))
+    else if (!online && (progress = fopen(w->marker, "wb")))
         fclose(progress);
     if(!thingsos_weidu_cache_named(c->output,book->id,book->title,w->final,sizeof(w->final)))return WD_STORAGE;
     snprintf(w->temporary, sizeof(w->temporary), "%s.part", w->final);
@@ -1194,8 +1207,7 @@ static thingsos_weidu_error_t download_run(
     unsigned count=online?stream_count(w->dir):0;
     thingsos_weidu_error_t e=WD_OK;
     FILE* f=NULL;
-    char previous_table[620];
-    snprintf(previous_table,sizeof(previous_table),"%s%s",w->toc,count?"":".prev");
+    snprintf(w->previous_table,sizeof(w->previous_table),"%s%s",w->toc,count?"":".prev");
     if(!count) {
     publish(c, WD_DOWNLOAD, "正在读取章节目录");
     snprintf(w->body, sizeof(w->body), "{\"bookIds\":[\"%s\"]}", book->id);
@@ -1207,9 +1219,9 @@ static thingsos_weidu_error_t download_run(
     /* An interrupted run leaves its chapters on disk. Keep the previous table
        beside the new one: it proves which chapter id each saved file is, so a
        later run can resume instead of downloading the whole book again. */
-    snprintf(previous_table, sizeof(previous_table), "%s.prev", w->toc);
-    char pending_toc[640];snprintf(pending_toc,sizeof(pending_toc),"%s.part",w->toc);
-    f = fopen(pending_toc, "wb");
+    snprintf(w->previous_table, sizeof(w->previous_table), "%s.prev", w->toc);
+    snprintf(w->pending_toc,sizeof(w->pending_toc),"%s.part",w->toc);
+    f = fopen(w->pending_toc, "wb");
     if (!f) return WD_STORAGE;
     parsed_t* p = calloc(1, sizeof(*p));
     if (!p) {
@@ -1226,14 +1238,14 @@ static thingsos_weidu_error_t download_run(
     free(p);
     if (fflush(f) || ferror(f)) e = WD_STORAGE;
     if (fclose(f)) e = WD_STORAGE;
-    if (e != WD_OK) {remove(pending_toc);return download_failure(c,e,stage);}
+    if (e != WD_OK) {remove(w->pending_toc);return download_failure(c,e,stage);}
     struct stat old_toc;
     if(!stat(w->toc,&old_toc)) {
-        remove(previous_table);
-        if(rename(w->toc,previous_table)){remove(pending_toc);return WD_STORAGE;}
+        remove(w->previous_table);
+        if(rename(w->toc,w->previous_table)){remove(w->pending_toc);return WD_STORAGE;}
     }
-    if(!commit_file(pending_toc,w->toc)) {
-        rename(previous_table,w->toc);remove(pending_toc);return WD_STORAGE;
+    if(!commit_file(w->pending_toc,w->toc)) {
+        rename(w->previous_table,w->toc);remove(w->pending_toc);return WD_STORAGE;
     }
     }
     if(online && wanted>=count)wanted=0;
@@ -1270,7 +1282,7 @@ static thingsos_weidu_error_t download_run(
                   fread(chapter, sizeof(*chapter), 1, f) == 1;
         if (f) fclose(f);
         if (!ok) { e = WD_STORAGE; goto finish; }
-        if (resumable && resume_chapter(previous_table, w->dir, i, chapter)) {
+        if (resumable && resume_chapter(w->previous_table, w->dir, i, chapter)) {
             f = fopen(w->toc, "r+b");
             bool kept = f && !fseek(f, (long)(i * sizeof(*chapter)), SEEK_SET) &&
                         fwrite(chapter, sizeof(*chapter), 1, f) == 1;
@@ -1326,12 +1338,12 @@ finish:
     free(pending);
     free(chapter);
     remove(w->temporary);
-    if(strcmp(previous_table,w->toc))remove(previous_table);
+    if(strcmp(w->previous_table,w->toc))remove(w->previous_table);
     if (e == WD_OK) {
         if(online)thingsos_weidu_stream_path(c->root,book->id,c->status.path,sizeof(c->status.path));
         else copy(c->status.path, sizeof(c->status.path), w->final);
         publish(c, WD_READY, online?"章节已就绪":"缓存完成，可离线阅读");
-        if(!online)remove(marker);
+        if(!online)remove(w->marker);
     }
     return c->status.phase==WD_ERROR && !strcmp(stage,"离线 EPUB 生成")?e:download_failure(c,e,stage);
 }
@@ -1410,6 +1422,26 @@ thingsos_weidu_error_t thingsos_weidu_restore(thingsos_weidu_client_t* c,const t
     remove(w->temporary);
     if(e==WD_OK){copy(c->status.path,sizeof(c->status.path),w->final);publish(c,WD_READY,"缓存完成，可离线阅读");}
     free(w);return c->status.phase==WD_ERROR?e:download_failure(c,e,"离线缓存恢复");
+}
+thingsos_weidu_error_t thingsos_weidu_transport_error(int tls_error, int tls_flags) {
+    if (tls_flags) return WD_TLS; /* Certificate verification result. */
+    /* esp-tls records mbedTLS codes negated; accept either sign. */
+    unsigned code = tls_error < 0 ? (unsigned)-tls_error : (unsigned)tls_error;
+    switch (code) {
+    case 0x0000: /* No TLS-layer error recorded. */
+    case 0x0042: /* MBEDTLS_ERR_NET_SOCKET_FAILED */
+    case 0x0044: /* MBEDTLS_ERR_NET_CONNECT_FAILED */
+    case 0x004C: /* MBEDTLS_ERR_NET_RECV_FAILED: Wi-Fi drop mid-body */
+    case 0x004E: /* MBEDTLS_ERR_NET_SEND_FAILED */
+    case 0x0050: /* MBEDTLS_ERR_NET_CONN_RESET */
+    case 0x7280: /* MBEDTLS_ERR_SSL_CONN_EOF: peer closed the socket */
+        return WD_NETWORK;
+    default:
+        return WD_TLS;
+    }
+}
+const char* thingsos_weidu_link_lost_text(void) {
+    return "WiFi 连接中断，请重试，原缓存保留";
 }
 const char* thingsos_weidu_error_text(thingsos_weidu_error_t e) {
     static const char* const text[] = { "完成",

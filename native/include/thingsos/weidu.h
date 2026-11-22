@@ -84,6 +84,9 @@ typedef struct {
     thingsos_weidu_error_t (*prefetch_get)(void*, unsigned sequence, char* ps,
                                            size_t capacity, unsigned timeout_ms);
     void (*prefetch_stop)(void*);
+    /* Before replaying an idempotent request: if the station lost Wi-Fi,
+       wait up to max_ms for it to re-associate and get an IP. Optional. */
+    void (*wait_link)(void*, unsigned max_ms);
 } thingsos_weidu_io_t;
 typedef struct {
     thingsos_weidu_io_t io;
@@ -140,6 +143,12 @@ bool thingsos_weidu_cache_cover(thingsos_weidu_client_t*,const char* id,const ch
 bool thingsos_weidu_partial(const char*, const char*, unsigned*);
 thingsos_weidu_error_t thingsos_weidu_restore(thingsos_weidu_client_t*, const thingsos_weidu_book_t*);
 const char* thingsos_weidu_error_text(thingsos_weidu_error_t);
+/* Failure text when the station lost Wi-Fi during a job and replays failed. */
+const char* thingsos_weidu_link_lost_text(void);
+/* Classify a failed HTTPS exchange from esp-tls diagnostics. Certificate
+   verification flags or TLS protocol errors are WD_TLS; mbedTLS socket-layer
+   failures (recv/send/reset/connect, peer EOF) are link losses -> WD_NETWORK. */
+thingsos_weidu_error_t thingsos_weidu_transport_error(int tls_error, int tls_flags);
 bool thingsos_weidu_flush(FILE*);
 bool thingsos_weidu_cover_url(const char*, char*, size_t);
 /* Resolve a Location against a previously validated public HTTPS image URL. */

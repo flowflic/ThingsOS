@@ -176,7 +176,13 @@ typedef enum {
 } metalio_charge_t;
 esp_err_t metalio_power_init(void);
 /// 0..100；-1 表示电量计不可用。/ 0..100; -1 when the gauge is unavailable.
+/// 后台每秒采样的快照；开机/唤醒后约 3s 内为 -1。/ Snapshot of the 1 Hz
+/// background sampler; -1 for about 3 s after boot or wake.
 int metalio_battery_percent(void);
+/// 休眠前停止电量采样。/ Stop battery sampling before sleep.
+void metalio_battery_pause(void);
+/// 唤醒后清除旧状态并在 3s 后重新校准。/ Reset and recalibrate 3 s after wake.
+void metalio_battery_restart(void);
 metalio_charge_t metalio_charge_state(void);
 void metalio_power_suspend(void);
 void metalio_power_resume(void);

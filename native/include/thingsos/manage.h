@@ -12,6 +12,11 @@ bool thingsos_book_name(const char*);
 bool thingsos_remote_directory(const char*);
 bool thingsos_managed_path(const char*);
 bool thingsos_managed_name(const char*);
+/* One decoded upload file name (no directory), before the type check: the
+   same FAT-safe rules the file manager applies to a path segment, so an
+   uploaded file stays previewable/renamable/deletable. A ".." inside a name
+   (e.g. a sender's "...") cannot traverse: separators are rejected. */
+bool thingsos_upload_name(const char*);
 uint64_t thingsos_path_id(const char*);
 typedef bool (*thingsos_path_mapper_t)(const char*,char*,size_t);
 void thingsos_path_mapper(thingsos_path_mapper_t);

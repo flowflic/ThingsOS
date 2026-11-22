@@ -34,6 +34,7 @@ static RTC_NOINIT_ATTR uint32_t usb_return_marker;
 static void usb_mode_run(void) {
     if(!thingsos_ima_quiesce_locked()){say("上传尚未结束，请稍后重试");return;}
     if(!thingsos_cubox_quiesce_locked()){say("Cubox 下载尚未结束，请稍后重试");return;}
+    if(!thingsos_flomo_quiesce_locked()){say("flomo 同步尚未结束，请稍后重试");return;}
     if(!thingsos_audio_quiesce_locked()){say("音频保存失败，请检查 SD 卡");return;}
     if(!startup_healthy){say("设备正在初始化，请稍后开启直连");return;}
     if(!media()){say("请插入可正常读取的 SD 卡");return;}

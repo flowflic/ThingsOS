@@ -33,7 +33,8 @@ static void status_battery_draw(int left,int top,unsigned percent,bool charging)
     }
 }
 /* A charge transition is its own refresh reason, including the first minute
-   after boot. It must not be encoded as a zero minute-refresh timestamp. */
+   after boot. It must not be encoded as a zero minute-refresh timestamp.
+   So is the battery becoming calibrated (or unavailable) after boot/wake. */
 static bool status_refresh_due(uint64_t time) {
     bool changed=false;
     if(time-app.charge_checked>=5000) {
@@ -41,6 +42,8 @@ static bool status_refresh_due(uint64_t time) {
         bool charging=thingsos_board_charging();
         changed=charging!=app.charging;
         app.charging=charging;
+        int battery=thingsos_board_battery();
+        if((battery<0)!=(app.battery<0)){changed=true;app.battery=battery;}
     }
     if(!changed && time-app.clock_refreshed<60000)return false;
     app.battery=thingsos_board_battery();

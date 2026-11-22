@@ -1074,3 +1074,139 @@ USB 串口补充修正：本机 ESP-IDF 6.1 文档 `docs/en/api-guides/usb-seria
 ima 配置：音频会话为排除传输会占用网络声明，直到文件关闭才释放，暂停不释放；ima 的凭证验证任务原来要求独占声明，所以播放音乐时必然启动失败。凭证验证与知识库列表只访问网络，现在允许在音频占用期间共享声明；上传与结果检查仍要求独占。手机配对页也沿用“音频不得阻止打开配对”的既有规则。
 
 主机测试 42/42 通过，新增蓝牙链路丢失断言；ESP-IDF 构建通过。未刷机、未发布，两项改动仍需真机验收。
+
+## 2026-11-22 脚注窗口外观与跟随标记弹出（版本保持不变）
+
+脚注卡片改为圆角（半径 18 px、3 px 边框）并加右下偏移阴影；标题行把原文标记（去掉方括号）显示为黑底圆形徽标，后接灰色“脚注”，下方 1 px 浅灰分隔线。正文仍用阅读字号减 2 px，行距 1.6；高度按实际行数计算，一行注释就是一行高的卡片。长注释底部右侧显示页码，提示文字改为灰色小字。黑白快速刷新模式下阴影改为点阵、灰字保持黑色，避免 DU 下灰阶失真。
+
+卡片在点中的脚注标记旁弹出：标记在阅读区上半部分时显示在其下方，下半部分时显示在其上方；首选一侧放不下且另一侧更宽时换边，同一条注释翻页时不换边。找不到标记位置（如标记不在当前页）时沿用原固定位置。点击判定使用实际绘制位置。新增 `thingsos_round_rect` 圆角填充原语。
+
+主机测试 73/73 通过（新增卡片放置、单行高度与卡片紧贴标记下方的断言），ESP-IDF 构建通过。未刷机、未发布；墨水屏上的圆角、阴影灰度和下半页向上弹出需真机验收。
+
+## 2026-11-22 微读缓存断网误报与书库标题截断（版本保持不变）
+
+用户 0.2.2 诊断：微读缓存报“HTTPS 安全连接失败”。诊断日志中每次失败都与路由器断开 STA（reason 4，一次 reason 7）在同一毫秒；请求已收到 200 和数十 KB 后报 `ESP_ERR_HTTP_INCOMPLETE_DATA`，mbedTLS 为 `-0x4C NET_RECV_FAILED`，证书校验标志为 0。固件把 socket 层错误归为 `WD_TLS`，而 `WD_TLS` 不重试，于是一次断线直接终止缓存。
+
+- 新增 `thingsos_weidu_transport_error()`：有校验标志或 TLS 协议错误仍为 `WD_TLS`；NET 接收/发送/重置/socket/连接失败和 `SSL_CONN_EOF` 归为 `WD_NETWORK`，可重放。
+- 重试前经新钩子 `wait_link` 等待 STA 重新取得 IP（最长 6 s，可被取消/停止打断，等待时释放 IO 锁）；覆盖文件通道、阅读上下文、登录 UID 和两个预取线程。只重放 GET 类幂等请求。
+- 网络模块新增断线计数 `thingsos_network_link_losses()`；任务期间断过线且最终仍为网络/DNS 错误时提示“WiFi 连接中断，请重试，原缓存保留”。
+- 书库“本地/微读/统计”标签框原为 80 px，界面字号最大 167% 时丢第二个字；改为 120/120/124 px，下划线与点击区同步。
+
+主机测试 73/73 通过（新增分类、重试前等待链路和 50 px 标签宽度断言），ESP-IDF 构建通过。未刷机、未发布；路由器频繁断开本身需现场排查。
+
+## 2026-11-22 内存采样工具（移植自小纸 Pico，版本保持不变）
+
+按 Pico 交接文档 P0 移植 USB 内存采样，并针对 ESP32-S31 拆分内存池。`include/thingsos/memory_trace.h` 输出 `ThingsOS_memtrace` 行，沿用 Pico 的 `event/subject/result` 与 `sram_*`、`dma_*` 字段，新增 `lp_*`：
+
+- `sram_*`：`INTERNAL|8BIT`，即现有微读启动门槛读取的口径；S31 上包含 32 KiB 低速 LP RAM，最大连续块常年是 LP RAM 的约 30 KiB。
+- `dma_*`：`INTERNAL|DMA`，S31 上即全部主 HP SRAM，是任务栈与 DMA 缓冲的真实余量。
+- `lp_*`：`MALLOC_CAP_RTCRAM`；`psram_*`：`SPIRAM|8BIT`。
+
+采样点：USB 连接时每 2 s 一次 `usb-sample`（subject 为页面；result 位：1 书籍打开、2 传书服务、4 微读忙、8 蓝牙运行、16 蓝牙连接、32 休眠、64 音频、128 HID 就绪）；Wi-Fi 取得 IP/断开（result 为断开原因）；传书服务启动、失败、停止；蓝牙状态变化、控制器初始化前/拒绝/就绪、启动和停止；微读请求、内存门槛拒绝、任务创建失败、任务开始（result 为任务栈所在区域：1 主 SRAM、2 LP RAM、3 PSRAM）、结束（result 为错误码）和栈最小余量（`weidu-stack`）；原有开机与书籍 `memory_log` 阶段及 `book-closed`。蓝牙标志经新增的无拷贝接口 `thingsos_ble_flags()` 读取。主机构建中采样为空操作。
+
+主机侧 `tools/capture_memory_trace.py` 只读监听（打开前清 DTR/RTS，不向串口写入），按 VID:PID `303a:1001` 和可选 `--serial-number` 匹配端口，输出 `memory.csv`、微读数字日志和按场景汇总的 `memory-summary.json`（含 P0 缺失场景、微读栈区域与余量）。需在 ESP-IDF Python 环境运行，例如：
+
+    <idf python> native/tools/capture_memory_trace.py --out build/metalio-memtrace-<日期> --serial-number <设备 MAC>
+
+不得与网页刷机工具或 esptool 同时占用串口。主机测试 73/73 通过，ESP-IDF 构建通过（主程序增大约 2.6 KB）。采样版尚未刷机；实机采集需授权刷入后按 `docs/METALIO-USB-FLASH-PROCEDURE.md` 进行。
+
+## 2026-11-22 音频暂停释放内存与网络声明（版本保持不变）
+
+采样版实测：音频会话打开（播放或暂停）时主 SRAM（DMA 能力）仅约 33 KiB 空闲、最大块 23.5 KiB，开机后最低曾到 8 字节；空闲时约 76 KiB。会话期间独占网络声明，暂停也不释放，用户无法单独结束，导致：微读与离线补传授权启动失败；首次启动低功耗蓝牙控制器的 DMA 门槛（空闲 ≥64 KiB、最大块 ≥24 KiB）不满足，提示“低功耗 DMA 不足”且搜索不到设备。
+
+- 播放暂停（用户暂停、蓝牙断开、休眠前挂起）改为“停放”：记录续播点后关闭文件，释放 I2S/DMA、解码器与 scratch、512 KiB 输入缓冲和网络声明，播放任务退出释放 10 KiB 栈。状态保持“播放已暂停”，路径与位置保留。
+- 继续播放重新打开文件：MP3 从记录的数据字节偏移续播（解码器在帧头重新同步，不重解前文），WAV 按毫秒定位；若此时微读/传输占用网络则保持暂停并提示。停放时停止、挂起与蓝牙路由判断无需创建任务。录音暂停不变（WAV 需保持打开）。
+- 新增 `thingsos_audio_claimed()`；微读启动失败只在音频真正占用网络时提示“音频占用网络”。新增 `thingsos_audio_resume_byte()` 及主机测试。
+- 修复后台阅读进度补传在启动被拒时不退避、每个 UI 循环（约 40 ms）重读 SD 队列的问题，改为 5 s 后重试；微读请求采样点移到取得网络声明之后。
+
+主机测试 74/74 通过，ESP-IDF 构建通过。未刷机；需实机验证暂停后内存回收、MP3/WAV 续播位置、蓝牙搜索与微读/补传启动。
+
+## 2026-11-22 实机内存分解与低功耗蓝牙启动预算（版本保持不变）
+
+采集 `build/metalio-memtrace-20261122-p0/`（主 SRAM 即 DMA 能力口径）：基线空闲 69.5 KiB、最大块 63.5 KiB；音频播放 −44.7 KiB，停放后回到 68.7 KiB，续播位置 46.0→50.5→52.4 s 连续；传书服务 −14.7 KiB；微读任务启动 −12.9 KiB（12 KiB 栈，全部在主 SRAM），任务内峰值再 −1.2～16.7 KiB，整本缓存栈最小余量 1052 字节；LP RAM 30 KiB 全程未用。首次播放后最大块固定降到 38.9 KiB（有小块常驻分配切开大块），之后不再恢复。
+
+蓝牙“搜索不到设备”：每次搜索都在控制器初始化前被预算拒绝（主 SRAM 62,135 / 38,900 字节，旧门槛 64/24 KiB，总量差约 1.4 KiB），扫描未启动；该读数还包含 6 KiB 临时初始化任务栈。依据实测（控制器+主机稳定占用 ≤37,164 字节，主要从最大块取 31～35 KiB），门槛改为总空闲 ≥56 KiB、最大块 ≥36 KiB；约 33 KiB 的故障场景仍拒绝。主机测试新增现场值通过、55 KiB 与 35 KiB 最大块拒绝。
+
+主机测试 74/74 通过，ESP-IDF 构建通过；候选 `build/blegate-20261122/` 待授权刷机，蓝牙配对与初始化峰值待实机确认。
+
+## 2026-11-22 微读任务栈上缓冲迁往 PSRAM（版本保持不变）
+
+实测整本缓存时 12 KiB 微读任务栈最小余量仅 1052 字节（下载链 worker → download_run → fetch_impl → esp_http_client/mbedTLS，另有 install_epub 4 KiB 拷贝缓冲）。按 Pico 交接文档“搬临时缓冲”迁移，不改栈大小：
+
+- `worker` 2512→960 字节：注销时的会话副本与两个路径缓冲移入常驻 PSRAM 工作区（同一时间只有一个微读任务），会话副本用后清零（成功与失败分支）。
+- `download_run` 2208→240 字节：进度标记、旧目录、待提交目录路径移入已有的堆工作区。
+- `fetch_impl` 1616→576+80 字节：URL 与三个令牌解析状态改为每次请求一块 PSRAM 临时区（预取线程并发请求，故不共享），返回前清零释放；所有提前返回由外层包装统一释放。
+- `install_epub` 4144→48 字节：4 KiB 拷贝缓冲改为 PSRAM。
+
+下载链合计减少约 4.5 KiB 栈（出版社 EPUB 路径再减约 4 KiB），预期整本缓存余量由约 1 KiB 升至约 5 KiB 以上，需实机 `weidu-stack` 事件确认。主机测试 74/74 通过，ESP-IDF 构建通过；未刷机。
+
+## 2026-11-22 主 SRAM 常驻占用优化（版本保持不变）
+
+- 音频命令队列与生命周期互斥锁改为 PSRAM（`xQueueCreateWithCaps` / `xSemaphoreCreateMutexWithCaps`）。二者在首次播放时创建并常驻，约 0.8 KiB；实测首次播放后主 SRAM 最大块从 63,476 降到 38,900 字节（恰好少 24 KiB）、总空闲仅少约 0.8 KiB，与此吻合。二者不在中断或 Flash 写入窗口使用。
+- 主任务栈 24 KiB → 20 KiB（`sdkconfig`、`sdkconfig.defaults`、`verify_build.py` 同步）。今天各次采集主任务最低剩余 15.6 KiB，即最多用约 9 KiB；新增 `main-stack` 采样事件，每创新低记录一次剩余量。
+- 以下静态数据移至 PSRAM（`EXT_RAM_BSS_ATTR`，均为界面或任务状态，不被中断、DMA 或 Flash 写入窗口访问）：设置快照 1932、倾斜采样队列 1544、更新状态 1484、WiFi 密码页重绘状态 1116+192、微读在线界面 776、应用页媒体状态 616、壁纸删除路径 512 字节，合计 8172 字节。显示查找表、扫描表、图像解码区、录音降噪、音频状态、诊断摘要、USB 端点缓冲与蓝牙可见快照保留在内部。
+
+预期常驻主 SRAM 增加约 12 KiB，首次播放后最大块不再被切分。主机测试 74/74 通过，ESP-IDF 构建与构建校验通过；未刷机，需实机确认最大块、主任务栈最低剩余与倾斜翻页/设置/WiFi 页功能。
+
+## 2026-11-22 传输上传文件名含“...”被拒（版本保持不变）
+
+用户经传输上传 `image_蓝金色童话原创壁纸系列世界地标建..._0.jpg`（LocalSend 用省略号缩短的长中文名，958,185 字节 JPEG）返回 `Invalid name/type/size`。原因是上传名检查把名中任意 `..` 当作路径穿越拒绝；而分隔符 `/`、`\`、`:`、控制字符和前导点早已拒绝，单个文件名内的 `..` 无法跨目录。同时该检查却放过了 FAT 不能保存的 `*?"<>|` 与结尾点/空格。
+
+新增 `thingsos_upload_name()`（`src/manage.c`），与文件管理对路径段的规则一致：长度不超过 190 字节，不以点或空格开头，不以点或空格结尾，不含控制字符与 `/\:*?"<>|`；名中的省略号允许。上传后的文件仍满足 `thingsos_managed_path`，可预览、重命名、删除。目录路径中的 `..` 段检查不变。主机测试 74/74 通过（新增该文件名、边界长度与各非法字符断言），ESP-IDF 构建通过；未刷机。
+
+## 2026-11-22 迁移小纸 Pico 微读同步页与离线阅读时长补传页（版本保持不变）
+
+来源：`D:\crossmux\ThingsOS` 工作区（0.4.3 及其未提交改动，双方画布同为 684×1216）。只迁移界面，Metalio 自有逻辑保留。
+
+- 离线阅读时长补传页（`weidu_readtime_ui.inc`）整文件采用 Pico 版本：卡片式状态、三步进度（上传阅读时长 / 时长通道授权 / 联网自动补传）、已授权后的 2×2 指标格（今日已上传、补传累计、待上传队列、待确认记录）、单一主按钮，待确认说明页改为编号卡片；界面字号上限 115%。同时带入 Pico 的会话规则：仅在开关开启且通道已授权、未过期时采集离线时长。
+- 微读同步页：诊断信息拆两行，时间戳与时长行间距调整；“上传阅读时长（含离线）”改为“上传阅读时长”；“阅读时长明细”改为“离线阅读时长补传”，“立即同步进度”移至 y 915；未配置提示改为引导进入补传页；进入/退出同步页与补传页请求过渡全刷。`wd_rt_set`/`wd_rt_uploaded_text` 按 Pico 移到同步页文件顶部。
+- 微读顶部“公众号/同步/WiFi/账号”改为居中标签与对应点击区，界面字号 26～50 不截断。
+- 保留 Metalio 自有改动：进入阅读的重试、后台失败不显示为书架横幅、后台任务不计为用户活动（自动锁屏修复）、授权待处理状态、补传面板忙时判断、音频占用网络提示。
+- 修正：Pico 源设计中“待扫码”“不自动重传”两个反白标签越出卡片右边框（Pico 自身渲染同样存在），新增右对齐标签函数，先在 PSRAM 离屏条带测量文字宽度再绘制，保持在卡片右侧留白内。建议回迁 Pico。
+
+主机测试 74/74 通过（补传页测试按新按钮位置更新，新增过渡全刷、指标格进入说明、50 px 大字号快照），ESP-IDF 构建通过；未刷机。
+
+## 2026-11-22 实机复测（`build/metalio-memtrace-20261122-wdui/`，固件 f59d4809）
+
+无错误、断言、屏幕欠载或栈保护触发（19,475 行）。含省略号文件名的图片上传成功（386,302/386,302 字节）。翻页器已保存，蓝牙控制器开机预留；连着翻页器时主 SRAM 基线 41,967 字节、最大块 40,948 字节。
+
+- 主任务栈（20 KiB）最低剩余 12,044 字节（最多用约 8.4 KiB）。
+- 连着翻页器整本缓存：任务启动时主 SRAM 约 28.5 KiB，峰值占用 15.8 KiB；全程最低 10,179 字节（另开传书服务且同时上传进度时），较上次 3,555 字节改善。整本缓存栈最低余量 3,608 字节，章节 5,640、进度上传 5,156 字节。
+- 音频碎片未消除：命令队列与互斥锁移到 PSRAM 后，首次播放→停放仍使最大块 40,948→20,468 字节（恰少 20 KiB），而总空闲只少 72 字节。播放任务栈曾位于该块中部（0x2f043e64）。推测为首次使用 I2S/GDMA/中断时 IDF 常驻的小对象（数十字节）落在大块中间，待用堆遍历确认。
+
+
+### Audio first-session heap diagnosis (2026-11-22, heapdiag build on 2a196ed)
+
+Device capture `build/metalio-memtrace-20261122-heapdiag-2`: one MP3 played about 77 s, then
+paused (parked). The only main-SRAM blocks that persist after the session are two 32-byte
+interrupt-allocator `vector_desc_t` entries (intno 7 and 9, linked list, allocated in
+`intr_alloc.c` and never freed by design), 72 B in total including heap overhead. This run they
+landed in a 2 KiB hole, and the largest free block came back to 43,044 B (42,996 B before). In the
+earlier `wdui` capture the same 72 B split the 40,948 B block to 20,468 B. The fragmentation
+depends on where these two descriptors land, not on a leak. A possible fix is to create those
+descriptors early at boot, before the heap fragments.
+
+Fix (`thingsos_audio_prepare_interrupts`, called from `app_main` after `thingsos_audio_reserve`): a
+short-lived task pinned to the audio core allocates six disabled interrupts on unused sources (TWAI0/1,
+PCNT0/1, CORDIC, ZERO_DET) and frees them. The allocator always takes the lowest free usable line, so
+the descriptors for the lines that I2S/GDMA will take later are created while main SRAM is compact. A
+boot log line `Prepared interrupt descriptors core=1 lines=...` records the lines. Build
+`build/intrprep-20261122` (ELF 7a771f08…, BIN 987043f3…) passes all 74 host tests. It was installed with the
+validated USB procedure (readback, selector and startup health passed). The boot log showed
+`core=1 lines=3,4,5,7,8,9`, and boot main SRAM went 142,751 -> 142,535 B. In device capture
+`build/metalio-memtrace-20261122-intrprep`, two tracks were played and then parked. The heap diagnosis
+reported `0 new persistent block(s)`. The largest main-SRAM block before the session was 36,852 B; after,
+it was 37,048 B (heap walk) and 36,852 B (sample).
+
+### Reader: second backward turn across a chapter boundary (2026-11-22)
+
+Symptom: on the first page of a chapter, the first backward turn went to the previous chapter's last
+page. The second backward turn then jumped to the last page of the chapter before that, instead of the
+previous chapter's second-to-last page. Cause: before the book's page index is complete
+(`!app.pagination_valid`), backward turns pop `app.history`. The cross-chapter branch in `next_page()`
+calls `load_chapter()`, which clears that history, and then positions on the last page without
+recording the earlier page starts, so the next turn found no history and crossed the boundary again.
+Fix: both last-page paths (the partial page index and the `page_end` scan) now push every earlier
+page start of that chapter into the history. Host regression test in `tests/txt_source_ui_test.inc`
+(back, back, forward across chapters 3 -> 2); all 74 host tests pass. Build `build/backturn-20261122`
+(BIN 0cbc24c2…, ELF d81ab4f1…), which also contains the interrupt-descriptor fix; not yet installed.

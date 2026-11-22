@@ -200,7 +200,11 @@ static void weidu_poll(void) {
     }
     if(app.weidu.busy && !next.busy && app.weidu_action==WD_DEVICE_RT_AUTH)
         wd_rt_auth_finished(&next);
-    if (app.weidu.busy && !next.busy) {
+    /* A job the user started restarts the idle interval when it finishes.
+       Background work (the 30 s reading report, chapter prefetch, covers) is
+       not activity: counting it kept the reader awake forever and kept
+       reading time accumulating while nobody was reading. */
+    if (app.weidu.busy && !next.busy && !app.weidu.background) {
         app.activity_at = now();
         thingsos_runtime_activity(&app.runtime, app.activity_at);
     }
@@ -331,9 +335,9 @@ static bool weidu_draw(void) {
         nav();
         return true;
     }
-    /* Measured spacing: 同步 333..379, WiFi 438..494 (59 px), 账号 549..597 (55 px).
-       公众号 is 73 px wide, so x=200 keeps the same 59 px gap in front of 同步. */
-    label("公众号",200,154,25,150);label("同步",330,154,25,85);label("WiFi",438,154,25,80);label("账号",548,154,25,100);
+    /* Keep balanced gaps across ui_px 26..50 without clipping 3-char or ASCII items. */
+    centered_label("公众号",120,154,25,176);centered_label("同步",296,154,25,118);
+    centered_label("WiFi",414,154,25,118);centered_label("账号",532,154,25,116);
     char info[96];
     snprintf(info,sizeof(info),"共 %u 本 · 长按 1 秒管理",(unsigned)app.weidu_total);
     if(app.weidu_query[0]) {
@@ -401,7 +405,9 @@ static bool weidu_begin(thingsos_weidu_action_t action, const thingsos_weidu_boo
     app.weidu_banner[0]=0;
     if (!started) {
         app.wd_rt_auth_pending=false;
-        say("微读启动失败，请确认网络、内存及传书状态");
+        /* A playing (or recording) audio session holds the exclusive network
+           claim; a parked playback pause releases it. Name the claim. */
+        say(thingsos_audio_claimed()?"音频占用网络，请先停止音频后再使用微读":"微读启动失败，请确认网络、内存及传书状态");
         return false;
     }
     thingsos_weidu_state(&app.weidu);
@@ -606,14 +612,14 @@ static bool weidu_tap(int x, int y) {
         return true;
     }
     if (y >= 100 && y < 195) {
-        if(x>=176 && x<316){
+        if(x>=120 && x<296){
             app.mp_mode=1;app.weidu_start=0;app.weidu_detail=false;weidu_shelf_load();app.dirty=true;app.transition_refresh=true;
             if(!app.weidu_total)mp_request(WD_DEVICE_MP_ACCOUNTS,NULL);
-        }else if (x >= 320 && x < 425) {
-            app.wd_sync_panel=true;app.dirty=true;
-        } else if (x >= 425 && x < 530)
+        }else if (x >= 296 && x < 414) {
+            app.wd_sync_panel=true;app.dirty=true;app.transition_refresh=true;
+        } else if (x >= 414 && x < 532)
             navigate(THINGSOS_UI_WIFI);
-        else if (x >= 530 && x < 648) {
+        else if (x >= 532 && x < 648) {
             app.weidu_logout_confirm = true;
             app.dirty = true;
         }

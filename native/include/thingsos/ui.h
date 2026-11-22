@@ -37,6 +37,7 @@ typedef enum {
     THINGSOS_UI_LOCK_PIN,
     THINGSOS_UI_SYSTEM,
     THINGSOS_UI_LOGS,
+    THINGSOS_UI_FLOMO,
     THINGSOS_UI_COUNT
 } thingsos_ui_page_t;
 typedef struct {

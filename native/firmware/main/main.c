@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "thingsos/mem.h"
 #include "thingsos/diagnostics.h"
+#include "thingsos/memory_trace.h"
 #include <ctype.h>
 #include <errno.h>
 static void reader_cache_drop_frames(void);
@@ -33,6 +34,7 @@ static void cover_retry_clear(void);
 #include <stdatomic.h>
 #include "network.h"
 #include "weidu_device.h"
+#include "driver/usb_serial_jtag.h"
 #include "system_monitor_device.h"
 #include "network_probe.h"
 #include "nvs.h"
@@ -57,6 +59,7 @@ static void cover_retry_clear(void);
 #include "thingsos/files.h"
 #include "thingsos/ima.h"
 #include "thingsos/cubox.h"
+#include "thingsos/flomo.h"
 #include "thingsos/graphics.h"
 #include "thingsos/ime.h"
 #include "thingsos/input.h"
@@ -220,7 +223,7 @@ typedef struct {
        note page on screen and where the next page starts. */
     bool footnote_open;
     size_t footnote_index, footnote_offset, footnote_next;
-    int footnote_card_height;
+    int footnote_card_top, footnote_card_height;
     unsigned chapter_index, px, line_choice, margin_choice, weight_choice, indent_chars;
     bool landscape_enabled,immersive_enabled,vertical_enabled;
     bool tilt_enabled;
@@ -259,7 +262,7 @@ typedef struct {
     char record_error[128];
     size_t font_count;
     bool sd_seen, board_ok, font_ok;
-    unsigned battery;
+    int battery; /* -1: not yet calibrated, hidden */
     bool charging;
     uint64_t charge_checked;
     uint64_t saved_at;
@@ -292,6 +295,7 @@ typedef struct {
     bool weidu_shelf_member[9];
     bool weidu_detail,weidu_logout_confirm,reader_from_weidu,reader_from_cubox;
     char cubox_query[97];
+    char flomo_query[97];
     thingsos_ui_page_t weidu_detail_return;
     size_t weidu_detail_return_start;
     unsigned mp_mode; /* 0 books, 1 followed accounts, 2 latest articles */
@@ -504,6 +508,7 @@ static bool online_pending(void);
 static bool online_modal_visible(void);
 static void wd_prepare(void);
 static void release_book(void) {
+    if(app.opened)thingsos_memory_trace("book-closed",app.page,0);
     online_close();
     app.toc_pending=app.toc_invalidate_pending=false;
     app.jump_pending=false;
@@ -952,10 +957,11 @@ static unsigned reader_body_margin(void) {
     return reader_margins[app.margin_choice < 3 ? app.margin_choice : 1];
 }
 static int reader_body_left(void) {
-    /* Optical correction: the left-aligned text block looked left-heavy on the
-       panel. Horizontal text keeps that 12 px shift; vertical columns use
-       symmetric gutters and distribute their pitch across the full body. */
-    return (int)reader_body_margin() + (app.vertical_enabled?0:12);
+    /* Symmetric gutters. Ragged lines once needed a 12 px optical shift to the
+       right; justified lines (clreq, 2026-11-21) end flush with the right
+       margin, so the shift only made the left gutter 24 px wider and left no
+       room on the right at the narrow margin. */
+    return (int)reader_body_margin();
 }
 static int reader_body_width(void) {
     return reader_width() - 2 * (int)reader_body_margin();
@@ -995,16 +1001,88 @@ static void reader_annotation_label(const char* text,int x,int y,int width) {
     thingsos_font_size(&app.font,reader_annotation_px());
     thingsos_label(&app.font,&app.canvas,text,x,y,width);app.font.ui_size_percent=scale;
 }
-/* Footnote window geometry: a card over the text column whose height follows
-   the note, so a one-line note does not open a mostly empty window. */
-#define FOOTNOTE_CARD_LEFT 40
-#define FOOTNOTE_CARD_WIDTH (reader_width()-80)
+/* Footnote window geometry: a rounded card over the text column. Its height
+   follows the note line by line, so a one-line note opens a one-line card, and
+   it opens next to the tapped marker (below it in the upper half of the page,
+   above it in the lower half). FOOTNOTE_CARD_TOP is only the fallback when the
+   marker is not on the page being shown. */
+#define FOOTNOTE_CARD_LEFT 32
+#define FOOTNOTE_CARD_WIDTH (reader_width()-64)
 #define FOOTNOTE_CARD_TOP (app.landscape_enabled?100:210)
 #define FOOTNOTE_CARD_MAX (app.landscape_enabled?540:660)
-#define FOOTNOTE_HEAD_BYTES 118
-#define FOOTNOTE_FOOT_BYTES 56
-#define FOOTNOTE_TEXT_LEFT (FOOTNOTE_CARD_LEFT + 32)
-#define FOOTNOTE_TEXT_WIDTH (FOOTNOTE_CARD_WIDTH - 64)
+#define FOOTNOTE_PAD 28
+#define FOOTNOTE_RADIUS 18
+#define FOOTNOTE_BORDER 3
+#define FOOTNOTE_HEAD 76 /* card top to the top of the first note line */
+#define FOOTNOTE_FOOT 58 /* last note line to the card bottom, hint included */
+#define FOOTNOTE_GAP 10  /* marker box to card edge */
+#define FOOTNOTE_LINE_PERCENT 160
+#define FOOTNOTE_TEXT_LEFT (FOOTNOTE_CARD_LEFT + FOOTNOTE_PAD)
+#define FOOTNOTE_TEXT_WIDTH (FOOTNOTE_CARD_WIDTH - 2 * FOOTNOTE_PAD)
+/* Body height that holds exactly `lines` note lines: the first baseline sits
+   one size below the top and each further line adds one pitch. */
+static int footnote_body_height(unsigned px, int lines) {
+    return (int)px + (lines - 1) * (int)(px * FOOTNOTE_LINE_PERCENT / 100);
+}
+/* Lines the note text from `from` needs, at most `limit` (measured, not drawn). */
+static int footnote_lines(const char* text, size_t bytes, size_t from, int limit) {
+    unsigned px = reader_annotation_px();
+    size_t end_at_limit = reader_annotation_page(NULL, text, bytes, from, FOOTNOTE_TEXT_LEFT, 0,
+        FOOTNOTE_TEXT_WIDTH, footnote_body_height(px, limit), FOOTNOTE_LINE_PERCENT);
+    for (int n = 1; n < limit; ++n)
+        if (reader_annotation_page(NULL, text, bytes, from, FOOTNOTE_TEXT_LEFT, 0, FOOTNOTE_TEXT_WIDTH,
+                                   footnote_body_height(px, n), FOOTNOTE_LINE_PERCENT) == end_at_limit)
+            return n;
+    return limit;
+}
+/* Side of the marker the card opens on. The marker's half of the reading area
+   decides; the other side wins only when the preferred one cannot hold the card
+   and is the roomier of the two. *room is the height available on that side. */
+static bool footnote_card_below(int anchor_top, int anchor_bottom, int region_top,
+                                int region_bottom, int desired, int* room) {
+    int below = region_bottom - (anchor_bottom + FOOTNOTE_GAP);
+    int above = (anchor_top - FOOTNOTE_GAP) - region_top;
+    bool prefer_below = anchor_top + anchor_bottom < region_top + region_bottom;
+    bool use_below = prefer_below ? (below >= desired || below >= above)
+                                  : !(above >= desired || above >= below);
+    *room = use_below ? below : above;
+    return use_below;
+}
+/* Lighten ink already drawn on white: secondary card text. Black/white fast
+   mode keeps it black, since DU would only threshold the gray back. */
+static void canvas_fade(int x, int y, int w, int h, unsigned keep) {
+    if (app.refresh_mode == 1 || !app.canvas.pixels) return;
+    if (x < 0) {w += x;x = 0;}
+    if (y < 0) {h += y;y = 0;}
+    if (x + w > app.canvas.width) w = app.canvas.width - x;
+    if (y + h > app.canvas.height) h = app.canvas.height - y;
+    for (int j = y; j < y + h; ++j)
+        for (int i = x; i < x + w; ++i) {
+            unsigned char* p = app.canvas.pixels + (size_t)j * app.canvas.width + i;
+            *p = (unsigned char)(255 - ((255 - *p) * keep) / 256);
+        }
+}
+/* Invert a pill-shaped area in place: black badge with the white mark that was
+   drawn there in black. The row insets match thingsos_round_rect. */
+static void canvas_invert_pill(int x, int y, int w, int h) {
+    if (!app.canvas.pixels) return;
+    int r = h / 2;
+    if (r > w / 2) r = w / 2;
+    for (int j = 0; j < h; ++j) {
+        int row = j < r ? j : (j >= h - r ? h - 1 - j : r), inset = 0;
+        if (row < r) {
+            int dy2 = (2 * (r - row) - 1) * (2 * (r - row) - 1);
+            while (inset < r && (2 * (r - inset) - 1) * (2 * (r - inset) - 1) + dy2 > 4 * r * r) ++inset;
+        }
+        int py = y + j;
+        if (py < 0 || py >= app.canvas.height) continue;
+        for (int i = x + inset; i < x + w - inset; ++i) {
+            if (i < 0 || i >= app.canvas.width) continue;
+            unsigned char* p = app.canvas.pixels + (size_t)py * app.canvas.width + i;
+            *p = (unsigned char)(255 - *p);
+        }
+    }
+}
 static size_t page_end(const thingsos_chapter_t* ch, size_t start) {
     unsigned font_errors=app.font.errors;
     thingsos_font_weight(&app.font,app.weight_choice);
@@ -1094,6 +1172,8 @@ static bool pagination_prepare(void) {
     unsigned layout[]={app.epub.plain_text?21u:app.epub_open?20u:19u,app.px,app.line_choice,app.margin_choice,app.indent_chars,(unsigned)reader_width(),(unsigned)reader_body_height()};
         key=cache_hash(key,layout,sizeof(layout));
         if(app.vertical_enabled){const uint32_t flow=0x56525432;key=cache_hash(key,&flow,sizeof(flow));}
+        /* clreq line breaking (2026-11-21) moves soft-wrap positions: never reuse older page indexes. */
+        {const uint32_t breaking=0x4C425232;key=cache_hash(key,&breaking,sizeof(breaking));}
         /* Fast mode now paginates with the same gray advances as balanced,
            but keeps its own salt so page caches written with the retired
            mono-hinted advances are never reused. */
@@ -1471,7 +1551,12 @@ static void paint_image_cover(
     }
     if(!ow)ow=1;
     if(!oh)oh=1;
-    paint_image_scaled(c,pixels,w,h,x+((int)bw-(int)ow)/2,y+((int)bh-(int)oh)/2,ow,oh,smooth,false);
+    /* Crop the overflow to the target box (and the canvas), not just the canvas:
+       wallpaper cards and the home preview are boxes inside a page. */
+    int x0=x<0?0:x,y0=y<0?0:y,x1=x+bw>c->width?c->width:x+bw,y1=y+bh>c->height?c->height:y+bh;
+    if(x1<=x0 || y1<=y0)return;
+    thingsos_image_paint_clipped(c,pixels,w,h,x+((int)bw-(int)ow)/2,y+((int)bh-(int)oh)/2,ow,oh,
+        x0,y0,x1,y1,smooth,false);
 }
 static void paint_image(thingsos_canvas_t* c,const unsigned char* pixels,unsigned w,unsigned h,
                         int x,int y,int bw,int bh) {
@@ -1752,17 +1837,20 @@ static void cover(book_t* b,int x,int y,int w,int h) {
 }
 static void nav(void) {
     unsigned active = app.page == THINGSOS_UI_WEIDU                                      ? 1
-                      : app.page == THINGSOS_UI_APPS || app.page == THINGSOS_UI_SYSTEM || app.page == THINGSOS_UI_TRANSFER || app.page == THINGSOS_UI_WIFI || app.page==THINGSOS_UI_RECORDER || app.page==THINGSOS_UI_MUSIC || app.page==THINGSOS_UI_ALARM || app.page==THINGSOS_UI_WALLPAPER || app.page==THINGSOS_UI_FILES || app.page==THINGSOS_UI_CUBOX || (app.page==THINGSOS_UI_PASSWORD&&(app.input_return==THINGSOS_UI_FILES||app.input_return==THINGSOS_UI_CUBOX)) ? 2
+                      : app.page == THINGSOS_UI_APPS || app.page == THINGSOS_UI_SYSTEM || app.page == THINGSOS_UI_TRANSFER || app.page == THINGSOS_UI_WIFI || app.page==THINGSOS_UI_RECORDER || app.page==THINGSOS_UI_MUSIC || app.page==THINGSOS_UI_ALARM || app.page==THINGSOS_UI_WALLPAPER || app.page==THINGSOS_UI_FILES || app.page==THINGSOS_UI_CUBOX || app.page==THINGSOS_UI_FLOMO || (app.page==THINGSOS_UI_PASSWORD&&(app.input_return==THINGSOS_UI_FILES||app.input_return==THINGSOS_UI_CUBOX||app.input_return==THINGSOS_UI_FLOMO)) ? 2
                       : app.page == THINGSOS_UI_LIBRARY || app.page==THINGSOS_UI_RECENT ? 0
                                                                                          : 3;
     thingsos_draw_nav(ui_font(), &app.canvas, active);
 }
+/* Library 本地/微读 tab row: two equal boxes, then the 统计 entry at x>=540. */
+#define LIBRARY_TAB_X 236
+#define LIBRARY_TAB_W 120
 static void header(const char* title) {
     bool back = app.page != THINGSOS_UI_LIBRARY && app.page != THINGSOS_UI_RECENT &&
                 app.page != THINGSOS_UI_WEIDU &&
                 app.page != THINGSOS_UI_SETTINGS && app.page != THINGSOS_UI_APPS;
     if (back) label("<", 36, 155, 36, 60);
-    if (app.page == THINGSOS_UI_FILES || app.page == THINGSOS_UI_WIFI || app.page == THINGSOS_UI_PASSWORD || app.page == THINGSOS_UI_CUBOX) label(title, 112, 160, 40, app.page==THINGSOS_UI_CUBOX?340:492);
+    if (app.page == THINGSOS_UI_FILES || app.page == THINGSOS_UI_WIFI || app.page == THINGSOS_UI_PASSWORD || app.page == THINGSOS_UI_CUBOX || app.page == THINGSOS_UI_FLOMO) label(title, 112, 160, 40, app.page==THINGSOS_UI_CUBOX||app.page==THINGSOS_UI_FLOMO?340:492);
     else if (back) centered_label(title, 96, 160, 40, app.canvas.width-192);
     /* The library, WeRead and transfer pages carry their own tab/status row at
        the same height, so a big title there only collides with it. */
@@ -2006,9 +2094,11 @@ static void draw_status(void) {
     int shift=app.canvas.width-684;
     thingsos_rect(&app.canvas,0,0,app.canvas.width,74,255);
     char status[96];
-    snprintf(status, sizeof(status), "%u%%", app.battery);
+    /* Uncalibrated battery (boot/wake settle) is hidden, never shown as 0%. */
+    if(app.battery>=0)snprintf(status, sizeof(status), "%d%%", app.battery);
+    else status[0]=0;
     thingsos_font_size(ui_font(),24);
-    thingsos_label_right(ui_font(),&app.canvas,status,508+shift,46,104);
+    if(status[0])thingsos_label_right(ui_font(),&app.canvas,status,508+shift,46,104);
     int battery_width=0;
     for(const char* p=status;*p;++p) {
         int advance=thingsos_glyph(ui_font(),NULL,(unsigned char)*p,0,0);
@@ -2021,7 +2111,7 @@ static void draw_status(void) {
     if(app.audio.state==THINGSOS_AUDIO_RECORDING||app.audio.state==THINGSOS_AUDIO_RECORD_PAUSED)
         status_mic_draw(wifi_left-48);
     status_wifi_draw(wifi_left,thingsos_network_connected());
-    status_battery_draw(620+shift,24,app.battery,app.charging);
+    if(app.battery>=0)status_battery_draw(620+shift,24,(unsigned)app.battery,app.charging);
     time_t clock = wall_time();
     struct tm date;
     if (clock >= 1577836800 && localtime_r(&clock, &date) && date.tm_year <= 199) {
@@ -2089,6 +2179,7 @@ static void memory_log(const char* stage) {
 #ifdef THINGSOS_HOST_UI
     (void)stage;
 #else
+    thingsos_memory_trace(stage,app.page,0);
     ESP_LOGI("ThingsOS_memory","stage=%s internal_free=%u internal_min=%u internal_largest=%u dma_free=%u dma_largest=%u psram_free=%u psram_min=%u psram_largest=%u covers=%u frames=%u main_stack_remaining=%u",
         stage,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
@@ -2100,6 +2191,35 @@ static void memory_log(const char* stage) {
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
         (unsigned)app.thumbnails.bytes,(unsigned)((!!reader_frames[0].pixels+!!reader_frames[1].pixels)*READER_CACHE_BYTES),
         (unsigned)uxTaskGetStackHighWaterMark(NULL));
+#endif
+}
+
+/* USB memory sampler: one ThingsOS_memtrace line every 2 s while the USB
+   console is attached. subject = page; result flags: 1 book open,
+   2 transfer service on, 4 WeRead busy, 8 BLE running, 16 BLE connected,
+   32 asleep, 64 audio active, 128 BLE HID ready. */
+static void memory_sample_tick(uint64_t time) {
+#ifdef THINGSOS_HOST_UI
+    (void)time;
+#else
+    static uint64_t sample_at;
+    if (time < sample_at) return;
+    sample_at = time + 2000;
+    if (!usb_serial_jtag_is_connected()) return;
+    unsigned ble = thingsos_ble_flags();
+    int flags = (app.opened ? 1 : 0) | (app.service_on ? 2 : 0) | (thingsos_weidu_busy() ? 4 : 0) |
+                ((ble & 1u) ? 8 : 0) | ((ble & 2u) ? 16 : 0) | (app.asleep ? 32 : 0) |
+                (thingsos_audio_active() ? 64 : 0) | ((ble & 4u) ? 128 : 0);
+    thingsos_memory_trace("usb-sample", app.page, flags);
+    thingsos_audio_heap_diag_poll();
+    /* Main task stack low-water: traced on each new low so the 20 KiB stack
+       (24 KiB until 2026-11-22; <=9 KiB used in captures) stays evidenced. */
+    static unsigned main_low = ~0u;
+    unsigned remaining = (unsigned)uxTaskGetStackHighWaterMark(NULL);
+    if (remaining < main_low) {
+        main_low = remaining;
+        thingsos_memory_trace("main-stack", app.page, (int)remaining);
+    }
 #endif
 }
 
@@ -2145,10 +2265,21 @@ static void cubox_search_submit(void);
 static bool app_cubox_region(void);
 static void app_cubox_presented(bool);
 static esp_err_t app_cubox_present(void);
+static bool flomo_draw(void);
+static bool flomo_tap(int,int);
+static bool flomo_key(thingsos_key_action_t);
+static bool flomo_scroll(int);
+static void flomo_enter(void);
+static void flomo_poll(void);
+static void flomo_search_submit(void);
+static bool app_flomo_region(void);
+static void app_flomo_presented(bool);
+static esp_err_t app_flomo_present(void);
 #include "apps_controls.inc"
 #include "bluetooth_ui.inc"
 #include "ima_ui.inc"
 #include "cubox_ui.inc"
+#include "flomo_ui.inc"
 #include "audio_feedback.inc"
 #include "lock_pin.inc"
 static void draw(void) {
@@ -2199,6 +2330,7 @@ static void draw(void) {
     if(wd_draw()) goto draw_message;
     if(weidu_draw()) goto draw_message;
     if(cubox_draw()) goto draw_message;
+    if(flomo_draw()) goto draw_message;
     if (management_draw()) goto draw_message;
     if (alignment_draw()) goto draw_message;
     if (feature_draw()) goto draw_message;
@@ -2211,9 +2343,12 @@ static void draw(void) {
             if(app.page==THINGSOS_UI_LIBRARY && visible_count)library_sorted(0);
             char summary[100];
             if(app.page==THINGSOS_UI_LIBRARY) {
-                centered_label("本地",264,154,28,80);centered_label("微读",344,154,28,80);
-                centered_label("统计",566,154,26,82);
-                thingsos_rect(&app.canvas,app.library_weidu?352:272,181,64,3,0);
+                /* Boxes fit two glyphs at the largest UI size (50/30 px = 167%);
+                   80 px boxes dropped the second character of each tab. */
+                centered_label("本地",LIBRARY_TAB_X,154,28,LIBRARY_TAB_W);
+                centered_label("微读",LIBRARY_TAB_X+LIBRARY_TAB_W,154,28,LIBRARY_TAB_W);
+                centered_label("统计",540,154,26,124);
+                thingsos_rect(&app.canvas,LIBRARY_TAB_X+(app.library_weidu?LIBRARY_TAB_W:0)+(LIBRARY_TAB_W-64)/2,181,64,3,0);
             }
             snprintf(summary, sizeof(summary), "%s · %u 本",app.page==THINGSOS_UI_LIBRARY && app.library_weidu?"微读离线":"本地书籍", (unsigned)visible_count);
             label(summary, 36, 276, 24,470);
@@ -2360,54 +2495,136 @@ static void draw(void) {
                 label("拖动查看 · 返回保留原阅读位置", 36, reader_height()-66, 24, reader_width()-72);
             }
             /* Footnote window: floats over the page, never changes pagination.
-               Its height follows the note so a one-line note does not open a
-               mostly empty card; longer notes paginate inside the card. */
+               It opens beside the tapped marker, its height follows the note
+               line by line, and longer notes paginate inside the card. */
             if (app.footnote_open && app.chapter.footnotes &&
                 app.footnote_index < app.chapter.footnote_count) {
                 const thingsos_footnote_t* note = app.chapter.footnotes + app.footnote_index;
                 const char* body = app.chapter.notes ? app.chapter.notes + note->note_offset : "";
                 size_t bytes = note->note_bytes;
-                thingsos_font_size(&app.font, app.px);
-                const int full = app.landscape_enabled?300:420;
-                int body_height = full;
-                size_t end_at_full = reader_annotation_page(
-                    NULL, body, bytes, app.footnote_offset, FOOTNOTE_TEXT_LEFT, 0,
-                    FOOTNOTE_TEXT_WIDTH, full, 165);
-                for (int probe = 150; probe < full; probe += 30)
-                    if (reader_annotation_page(NULL, body, bytes,
-                                                  app.footnote_offset, FOOTNOTE_TEXT_LEFT, 0,
-                                                  FOOTNOTE_TEXT_WIDTH, probe, 165) == end_at_full) {
-                        body_height = probe;
-                        break;
-                    }
-                int height = FOOTNOTE_HEAD_BYTES + body_height + FOOTNOTE_FOOT_BYTES;
-                if (height > FOOTNOTE_CARD_MAX) height = FOOTNOTE_CARD_MAX;
-                app.footnote_card_height = height;
-                thingsos_rect(&app.canvas, FOOTNOTE_CARD_LEFT, FOOTNOTE_CARD_TOP,
-                              FOOTNOTE_CARD_WIDTH, height, 0);
-                thingsos_rect(&app.canvas, FOOTNOTE_CARD_LEFT + 4, FOOTNOTE_CARD_TOP + 4,
-                              FOOTNOTE_CARD_WIDTH - 8, height - 8, 255);
-                label("脚注", FOOTNOTE_CARD_LEFT + 32, FOOTNOTE_CARD_TOP + 58, 30, 240);
-                char mark[48];
-                size_t mark_bytes = note->end - note->begin;
-                if (mark_bytes >= sizeof(mark)) mark_bytes = sizeof(mark) - 1;
-                if (note->begin + mark_bytes <= app.chapter.bytes) {
-                    memcpy(mark, app.chapter.text + note->begin, mark_bytes);
-                    mark[mark_bytes] = 0;
-                    label(mark, FOOTNOTE_CARD_LEFT + FOOTNOTE_CARD_WIDTH - 84, FOOTNOTE_CARD_TOP + 56, 26, 80);
+                const unsigned npx = reader_annotation_px();
+                const int pitch = (int)(npx * FOOTNOTE_LINE_PERCENT / 100);
+                const int chrome = FOOTNOTE_HEAD + FOOTNOTE_FOOT;
+                const int region_top = reader_body_top(),
+                          region_bottom = reader_body_top() + reader_body_height();
+                int cap = (FOOTNOTE_CARD_MAX - chrome - (int)npx) / pitch + 1;
+                if (cap < 1) cap = 1;
+                /* The side is chosen from the whole note so it never flips
+                   between pages of the same note. */
+                int whole_lines = footnote_lines(body, bytes, 0, cap);
+                int anchor_top = -1, anchor_bottom = -1;
+                if (app.text_hits_chapter == app.chapter_index && app.text_hits_start == app.start)
+                    for (size_t i = 0; i < app.text_hits.count; ++i)
+                        if (app.text_hits.items[i].begin == note->begin) {
+                            anchor_top = app.text_hits.items[i].y;
+                            anchor_bottom = anchor_top + app.text_hits.items[i].h;
+                            break;
+                        }
+                bool below = true;
+                int room = region_bottom - FOOTNOTE_CARD_TOP;
+                if (anchor_top >= 0)
+                    below = footnote_card_below(anchor_top, anchor_bottom, region_top, region_bottom,
+                                                chrome + footnote_body_height(npx, whole_lines),
+                                                &room);
+                if (room < chrome + (int)npx) { /* no side holds one line: overlay */
+                    anchor_top = -1;
+                    room = region_bottom - region_top;
                 }
-                thingsos_rect(&app.canvas, FOOTNOTE_CARD_LEFT + 32, FOOTNOTE_CARD_TOP + 84,
-                              FOOTNOTE_CARD_WIDTH - 64, 2, 0);
-                thingsos_font_size(&app.font, app.px);
+                if (room > FOOTNOTE_CARD_MAX) room = FOOTNOTE_CARD_MAX;
+                int max_lines = (room - chrome - (int)npx) / pitch + 1;
+                if (max_lines > cap) max_lines = cap;
+                if (max_lines < 1) max_lines = 1;
+                int lines = footnote_lines(body, bytes, app.footnote_offset, max_lines);
+                /* Pages of max_lines each; only the last page is shorter. */
+                unsigned page_no = 1, page_count = 0;
+                for (size_t at = 0; at < bytes && page_count < 99;) {
+                    size_t next = reader_annotation_page(NULL, body, bytes, at, FOOTNOTE_TEXT_LEFT, 0,
+                        FOOTNOTE_TEXT_WIDTH, footnote_body_height(npx, max_lines),
+                        FOOTNOTE_LINE_PERCENT);
+                    ++page_count;
+                    if (next <= at) break;
+                    if (next <= app.footnote_offset) page_no = page_count + 1;
+                    at = next;
+                }
+                const int body_height = footnote_body_height(npx, lines);
+                const int height = chrome + body_height;
+                int top;
+                if (anchor_top >= 0)
+                    top = below ? anchor_bottom + FOOTNOTE_GAP : anchor_top - FOOTNOTE_GAP - height;
+                else {
+                    top = FOOTNOTE_CARD_TOP;
+                    if (top + height > region_bottom) top = region_bottom - height;
+                    if (top < region_top) top = region_top;
+                }
+                app.footnote_card_top = top;
+                app.footnote_card_height = height;
+                const bool mono = app.refresh_mode == 1;
+                const int left = FOOTNOTE_CARD_LEFT, width = FOOTNOTE_CARD_WIDTH;
+                /* Offset shadow; DU cannot hold its gray, so a dot screen. */
+                thingsos_round_rect(&app.canvas, left + 5, top + 6, width, height, FOOTNOTE_RADIUS,
+                                    mono ? 0 : 170);
+                if (mono)
+                    for (int py = top + 6; py < top + 6 + height && py < app.canvas.height; ++py)
+                        for (int px = left + 5; px < left + 5 + width && px < app.canvas.width; ++px)
+                            if (py >= 0 && ((px + py) & 1))
+                                app.canvas.pixels[(size_t)py * app.canvas.width + px] = 255;
+                thingsos_round_rect(&app.canvas, left, top, width, height, FOOTNOTE_RADIUS, 0);
+                thingsos_round_rect(&app.canvas, left + FOOTNOTE_BORDER, top + FOOTNOTE_BORDER,
+                                    width - 2 * FOOTNOTE_BORDER, height - 2 * FOOTNOTE_BORDER,
+                                    FOOTNOTE_RADIUS - FOOTNOTE_BORDER, 255);
+                /* Header: the source mark as a black badge, then a quiet label. */
+                char mark[48];
+                size_t mark_bytes = note->end - note->begin, mark_skip = 0;
+                if (mark_bytes >= sizeof(mark)) mark_bytes = sizeof(mark) - 1;
+                if (note->begin + mark_bytes > app.chapter.bytes) mark_bytes = 0;
+                if (mark_bytes) memcpy(mark, app.chapter.text + note->begin, mark_bytes);
+                mark[mark_bytes] = 0;
+                while (mark_skip < mark_bytes && (mark[mark_skip] == '[' || mark[mark_skip] == ' '))
+                    ++mark_skip;
+                while (mark_bytes > mark_skip &&
+                       (mark[mark_bytes - 1] == ']' || mark[mark_bytes - 1] == ' '))
+                    mark[--mark_bytes] = 0;
+                const int badge_x = left + FOOTNOTE_PAD, badge_y = top + 20, badge_h = 30;
+                int title_x = badge_x;
+                if (mark_bytes > mark_skip) {
+                    const int max_w = 120;
+                    label(mark + mark_skip, badge_x + 11, badge_y + 23, 20, max_w - 22);
+                    int ink_right = badge_x + 11;
+                    for (int py = badge_y; py < badge_y + badge_h; ++py)
+                        for (int px = badge_x + 11; px < badge_x + max_w && px < app.canvas.width; ++px)
+                            if (py >= 0 && py < app.canvas.height &&
+                                app.canvas.pixels[(size_t)py * app.canvas.width + px] < 160 &&
+                                px + 1 > ink_right)
+                                ink_right = px + 1;
+                    int badge_w = ink_right + 11 - badge_x;
+                    if (badge_w < badge_h) {
+                        /* Centre a narrow mark in a round badge. */
+                        int shift = (badge_h - badge_w) / 2;
+                        thingsos_rect(&app.canvas, badge_x, badge_y, max_w, badge_h, 255);
+                        label(mark + mark_skip, badge_x + 11 + shift, badge_y + 23, 20, max_w - 22);
+                        badge_w = badge_h;
+                    }
+                    canvas_invert_pill(badge_x, badge_y, badge_w, badge_h);
+                    title_x = badge_x + badge_w + 12;
+                }
+                label("脚注", title_x, badge_y + 23, 22, 120);
+                canvas_fade(title_x, badge_y, 130, badge_h + 4, 150);
+                thingsos_rect(&app.canvas, left + FOOTNOTE_PAD, top + 62, width - 2 * FOOTNOTE_PAD, 1,
+                              mono ? 0 : 190);
                 app.footnote_next = reader_annotation_page(
                     &app.canvas, body, bytes, app.footnote_offset, FOOTNOTE_TEXT_LEFT,
-                    FOOTNOTE_CARD_TOP + FOOTNOTE_HEAD_BYTES, FOOTNOTE_TEXT_WIDTH, body_height,
-                    165);
-                label(app.footnote_next < bytes ? "点击窗口翻页 · 点击空白处关闭"
-                                                : "点击空白处关闭",
-                      FOOTNOTE_CARD_LEFT + 32,
-                      FOOTNOTE_CARD_TOP + height - FOOTNOTE_FOOT_BYTES + 34, 22,
-                      FOOTNOTE_CARD_WIDTH - 64);
+                    top + FOOTNOTE_HEAD, FOOTNOTE_TEXT_WIDTH, body_height, FOOTNOTE_LINE_PERCENT);
+                const int hint_y = top + height - 22;
+                label(app.footnote_next < bytes ? "点击窗口翻页 · 空白处关闭" : "点击空白处关闭",
+                      left + FOOTNOTE_PAD, hint_y, 19, width - 2 * FOOTNOTE_PAD - 90);
+                if (page_count > 1) {
+                    char pages[24];
+                    snprintf(pages, sizeof(pages), "%u / %u", page_no, page_count);
+                    thingsos_font_size(ui_font(), 19);
+                    thingsos_label_right(ui_font(), &app.canvas, pages,
+                                         left + width - FOOTNOTE_PAD - 90, hint_y, 90);
+                }
+                canvas_fade(left + FOOTNOTE_PAD, hint_y - 24, width - 2 * FOOTNOTE_PAD, 30, 140);
                 thingsos_font_size(&app.font, app.px);
             }
             break;
@@ -2598,8 +2815,9 @@ static bool ui_static_panel_page(void) {
     /* Audio controls remain static between worker acknowledgements/timer ticks.
        Use vendor white maintenance and verified immediate rail-off on them too. */
     return app_media.preview || app.page==THINGSOS_UI_MUSIC || app.page==THINGSOS_UI_RECORDER ||
-        app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX ||
-        (app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX));
+        app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX || app.page==THINGSOS_UI_FLOMO ||
+        (app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX ||
+                                            app.input_return==THINGSOS_UI_FLOMO));
 }
 static bool ui_background_frame_yields(bool queued_input) {
     /* A contact accepted by the UI may paint before its release. An unrelated
@@ -2618,11 +2836,13 @@ static void navigate(thingsos_ui_page_t page) {
     app_controls_bt_return=false;
     if((page==THINGSOS_UI_USB||page==THINGSOS_UI_UPGRADE||page==THINGSOS_UI_RECOVERY)&&!thingsos_ima_quiesce_locked()){say("上传尚未结束，请稍后重试");return;}
     if((page==THINGSOS_UI_USB||page==THINGSOS_UI_UPGRADE||page==THINGSOS_UI_RECOVERY)&&!thingsos_cubox_quiesce_locked()){say("Cubox 下载尚未结束，请稍后重试");return;}
+    if((page==THINGSOS_UI_USB||page==THINGSOS_UI_UPGRADE||page==THINGSOS_UI_RECOVERY)&&!thingsos_flomo_quiesce_locked()){say("flomo 同步尚未结束，请稍后重试");return;}
     if(ima_ui&&page!=app.page)ima_ui->view=0;
     if(page!=THINGSOS_UI_CUBOX && page!=THINGSOS_UI_READING && page!=THINGSOS_UI_PASSWORD && thingsos_cubox_pairing())thingsos_cubox_pair(false);
+    if(page!=THINGSOS_UI_FLOMO && page!=THINGSOS_UI_PASSWORD && thingsos_flomo_pairing())thingsos_flomo_pair(false);
     if((page==THINGSOS_UI_USB||page==THINGSOS_UI_UPGRADE||page==THINGSOS_UI_RECOVERY)&&!thingsos_audio_quiesce_locked()){say("音频保存失败，请检查 SD 卡");return;}
     if(page==THINGSOS_UI_WIFI&&app.page!=THINGSOS_UI_PASSWORD&&app.page!=THINGSOS_UI_WIFI)app.network_return=app.page;
-    if((page==THINGSOS_UI_SYSTEM||page==THINGSOS_UI_TRANSFER||page==THINGSOS_UI_FILES||page==THINGSOS_UI_RECORDER||page==THINGSOS_UI_MUSIC||page==THINGSOS_UI_CUBOX)&&app.page!=page&&app.page!=THINGSOS_UI_LOCK)app.app_return=app.page;
+    if((page==THINGSOS_UI_SYSTEM||page==THINGSOS_UI_TRANSFER||page==THINGSOS_UI_FILES||page==THINGSOS_UI_RECORDER||page==THINGSOS_UI_MUSIC||page==THINGSOS_UI_CUBOX||page==THINGSOS_UI_FLOMO)&&app.page!=page&&app.page!=THINGSOS_UI_LOCK)app.app_return=app.page;
     app.controls_open=app.controls_wifi_confirm=false;app.audio_progress=false;
     WHERE("navigate -> %d from %d",(int)page,(int)app.page);
     if(lock_edge){app.lock_wave_pending=true;app.lock_wave_forward=page==THINGSOS_UI_LOCK;}
@@ -2758,7 +2978,11 @@ static void power_action(unsigned action) {
     if (action == 1 && app.asleep) {
         app.asleep = false;
         if (thingsos_board_resume() != ESP_OK) say("触控唤醒失败，请重启");
+        app.battery = -1;
+        thingsos_board_trace_mark(THINGSOS_MARK_RESUME_NET);
         network_wake_after_sleep();
+        thingsos_board_trace_mark(THINGSOS_MARK_RESUME_NET_DONE);
+        thingsos_ble_resume();
         thingsos_runtime_overlay(
             &app.runtime, app.menu || app.page != THINGSOS_UI_READING || app.image_view.open,
             now());
@@ -2771,12 +2995,16 @@ static void power_action(unsigned action) {
         else if(app.page==THINGSOS_UI_LOCK)unlock_screen();
         network_hotspot_policy();
         if(app.opened && app.page==THINGSOS_UI_READING && !app.wd_active)wd_opened();
+        thingsos_board_trace_mark(THINGSOS_MARK_RESUME_UI);
         return;
     }
     if (action == 1 || action == 2) {
         if(!thingsos_ima_quiesce_locked()){say("上传尚未结束，暂时无法休眠");return;}
         if(!thingsos_cubox_quiesce_locked()){say("Cubox 下载尚未结束，暂时无法休眠");return;}
+        if(!thingsos_flomo_quiesce_locked()){say("flomo 同步尚未结束，暂时无法休眠");return;}
         if(!thingsos_audio_quiesce_locked()){say("录音尚未保存，暂时无法休眠");return;}
+        /* The S31 BLE controller must not run through light sleep (2026-11-21 IWDT resets). */
+        if(!app.asleep && !thingsos_ble_suspend()){say("低功耗蓝牙正在启动，请稍后再试");return;}
         app.controls_open=false;
         if(app.wd_active){
             if(!app.wd_cloud_prompt && app.wd_push_on && thingsos_network_connected() && wall_time()>=WD_SYNC_MIN_TIME){
@@ -2800,7 +3028,9 @@ static void power_action(unsigned action) {
             thingsos_network_sleep();
             if (thingsos_board_suspend(&app.canvas) != ESP_OK && action != 2) {
                 thingsos_board_resume();
+                app.battery = -1;
                 network_wake_after_sleep();
+                thingsos_ble_resume();
                 reader_canvas_geometry();
                 say("息屏失败，请重试");
                 app.dirty = true;
@@ -2818,7 +3048,9 @@ static void power_action(unsigned action) {
         if (action == 2 && thingsos_board_power_off() != ESP_OK) {
             app.asleep = false;
             thingsos_board_resume();
+            app.battery = -1;
             network_wake_after_sleep();
+            thingsos_ble_resume();
             say("关机失败，请重试");
             app.dirty = true;
             thingsos_runtime_overlay(
@@ -2829,7 +3061,7 @@ static void power_action(unsigned action) {
 }
 static void auto_sleep_poll(uint64_t time) {
     if(!alarm_active() && !app.asleep && !app.wd_power_action && app.page!=THINGSOS_UI_LOCK &&
-       !thingsos_network_busy() && !thingsos_ima_pairing() && !thingsos_cubox_pairing() && lock_due(time))power_action(1);
+       !thingsos_network_busy() && !thingsos_ima_pairing() && !thingsos_cubox_pairing() && !thingsos_flomo_pairing() && lock_due(time))power_action(1);
 }
 /* Keep the main task responsive and WiFi alive until the one-shot exit upload
    completes. No duration replay is queued after an error or timeout. */
@@ -2868,8 +3100,17 @@ static void next_page(bool forward) {
             if (!load_chapter(app.chapter_index + 1)) { if(!app.epub.weidu_online)say("章节无法打开"); return; }
         } else if (app.epub_open && !forward && app.chapter_index) {
             if (!load_chapter(app.chapter_index - 1)) { if(!app.epub.weidu_online)say("章节无法打开"); return; }
+            /* Landing on the last page of the previous chapter: load_chapter()
+               cleared the page history, so record every earlier page start of
+               that chapter. Otherwise the next backward turn finds no history
+               and skips to the chapter before instead of this chapter's
+               second-to-last page. */
             if(app.pages && app.pagination_chapter>app.chapter_index) {
                 size_t last=thingsos_page_find(app.pages,app.page_count,app.chapter_index,UINT32_MAX);
+                size_t first=last;
+                while(first && app.pages[first-1].chapter==app.chapter_index) --first;
+                for(size_t i=first;i<last && app.history_count<4096;++i)
+                    app.history[app.history_count++]=app.pages[i].offset;
                 app.start=app.pages[last].offset;
                 goto page_changed;
             }
@@ -2877,6 +3118,7 @@ static void next_page(bool forward) {
             while (offset < app.chapter.bytes) {
                 size_t end = page_end(&app.chapter, offset);
                 if (end <= offset || end >= app.chapter.bytes) break;
+                if (app.history_count < 4096) app.history[app.history_count++] = offset;
                 offset = end;
                 vTaskDelay(pdMS_TO_TICKS(1));
             }
@@ -3021,6 +3263,7 @@ static void capacitive_key_dispatch(thingsos_key_action_t action) {
     if(bt_ui_key(action))return;
     if(ima_key(action))return;
     if(cubox_key(action))return;
+    if(flomo_key(action))return;
     if(app.jump_pending && action!=THINGSOS_KEY_NONE) {
         reader_jump_cancel();
         if(action!=THINGSOS_KEY_HOME)return;
@@ -3269,7 +3512,7 @@ static void tap_dispatch(int x, int y) {
     if (!app.confirm_action && !app.time_edit && y >= 74 && y < 200 && x < 90 &&
         (app.page!=THINGSOS_UI_STATS || y<STATS_TABS_Y) &&
         app.page != THINGSOS_UI_LIBRARY && app.page != THINGSOS_UI_RECENT &&
-        app.page != THINGSOS_UI_WEIDU && app.page != THINGSOS_UI_CUBOX &&
+        app.page != THINGSOS_UI_WEIDU && app.page != THINGSOS_UI_CUBOX && app.page != THINGSOS_UI_FLOMO &&
         app.page != THINGSOS_UI_SETTINGS && app.page != THINGSOS_UI_APPS &&
         app.page != THINGSOS_UI_READING && app.page != THINGSOS_UI_LOCK &&
         app.page != THINGSOS_UI_MANAGE && app.page != THINGSOS_UI_PASSWORD) {
@@ -3291,6 +3534,7 @@ static void tap_dispatch(int x, int y) {
     }
     if(weidu_tap(x,y)) return;
     if(cubox_tap(x,y)) return;
+    if(flomo_tap(x,y)) return;
     if (alignment_tap(x, y)) return;
     if (management_tap(x, y)) return;
     if (feature_tap(x, y)) return;
@@ -3401,8 +3645,8 @@ static void tap_dispatch(int x, int y) {
         if (app.footnote_open && app.chapter.footnotes &&
             app.footnote_index < app.chapter.footnote_count) {
             bool inside = x >= FOOTNOTE_CARD_LEFT && x < FOOTNOTE_CARD_LEFT + FOOTNOTE_CARD_WIDTH &&
-                          y >= FOOTNOTE_CARD_TOP &&
-                          y < FOOTNOTE_CARD_TOP + app.footnote_card_height;
+                          y >= app.footnote_card_top &&
+                          y < app.footnote_card_top + app.footnote_card_height;
             if (inside && app.footnote_next > app.footnote_offset)
                 app.footnote_offset = app.footnote_next;
             else
@@ -3434,6 +3678,7 @@ static void tap_dispatch(int x, int y) {
                 app.footnote_open = true;
                 app.footnote_index = i;
                 app.footnote_offset = app.footnote_next = 0;
+                app.footnote_card_top = FOOTNOTE_CARD_TOP;
                 app.footnote_card_height = FOOTNOTE_CARD_MAX;
                 app.dirty = true;
                 return;
@@ -3544,8 +3789,8 @@ static void tap_dispatch(int x, int y) {
     }
     if (app.page == THINGSOS_UI_LIBRARY || app.page == THINGSOS_UI_RECENT) {
         bool recent = app.page == THINGSOS_UI_RECENT;
-        if(!recent && y>=100 && y<195 && x>=244 && x<444) {
-            bool selected=x>=344;
+        if(!recent && y>=100 && y<195 && x>=LIBRARY_TAB_X && x<LIBRARY_TAB_X+2*LIBRARY_TAB_W) {
+            bool selected=x>=LIBRARY_TAB_X+LIBRARY_TAB_W;
             if(selected!=app.library_weidu){app.library_weidu=selected;app.library_order_valid=false;app.list_start=0;app.dirty=true;}
             return;
         }
@@ -3684,6 +3929,7 @@ static void* json_psram_malloc(size_t size){
 #endif
 void app_main(void) {
     thingsos_diag_start();
+    thingsos_board_trace_report();
     ESP_LOGI(
         "ThingsOS", "Native application starting; PSRAM initialized=%d",
         esp_psram_is_initialized());
@@ -3749,7 +3995,7 @@ void app_main(void) {
     }
     app.battery = thingsos_board_battery();
     app.charging = thingsos_board_charging();
-    ESP_LOGI("ThingsOS", "Default font verified; initial battery=%u%% charging=%u", app.battery,
+    ESP_LOGI("ThingsOS", "Default font verified; initial battery=%d%% charging=%u", app.battery,
              (unsigned)app.charging);
     memory_log("boot-post-board");
     uint32_t unix_sec;
@@ -3768,6 +4014,7 @@ void app_main(void) {
     if (app.board_ok) app_light_apply();
     thingsos_audio_volume(app.audio_volume);
     thingsos_audio_reserve();
+    thingsos_audio_prepare_interrupts();
     thingsos_network_radio(app.wifi_enabled);
     ESP_LOGI("ThingsOS", "Reader config: px=%u refresh=%u mode=%u ripple=%d",
         app.px,app.refresh_pages,app.refresh_mode,app.ripple_enabled);
@@ -3788,6 +4035,8 @@ void app_main(void) {
     thingsos_ima_init();
     thingsos_cubox_init();
     thingsos_cubox_set_network_yield(app_audio_yield_for_cubox);
+    thingsos_flomo_init();
+    thingsos_flomo_set_network_yield(app_audio_yield_for_flomo);
     thingsos_bluetooth_init();
     thingsos_ble_init();
     thingsos_network_service(app.service_on);
@@ -3809,14 +4058,19 @@ void app_main(void) {
     int last_x = 0, last_y = 0, initial_x = 0, initial_y = 0;
     uint64_t refresh_at = now();
     while (true) {
+        thingsos_board_trace_mark(THINGSOS_MARK_LOOP_TOP);
         thingsos_ima_pair_poll();
         thingsos_cubox_pair_poll();
+        thingsos_flomo_pair_poll();
+        thingsos_board_trace_mark(THINGSOS_MARK_PAIR_POLLED);
         /* Joining the HTTP task must happen before taking the shared I/O mutex. */
         if(thingsos_network_service_poll()!=ESP_OK) {
             app.service_on=false;thingsos_network_service(false);
             say("传书服务启动或关闭失败，请重试");
         }
+        thingsos_board_trace_mark(THINGSOS_MARK_SERVICE_POLLED);
         uint64_t time = now();
+        memory_sample_tick(time);
         thingsos_runtime_tick(&app.runtime, time);
         feature_account();
         if (transfer_blocks_ui()) {
@@ -3860,8 +4114,10 @@ void app_main(void) {
         /* Stay queued while an HTTPS step owns the shared display/SD lock.
            A 50 ms timeout followed by a 100 ms sleep misses its brief yields
            and lets the higher-priority worker starve input for seconds. */
+        thingsos_board_trace_mark(THINGSOS_MARK_IO_LOCK_WAIT);
         uint64_t io_wait_at = now();
         xSemaphoreTake(thingsos_io_lock, portMAX_DELAY);
+        thingsos_board_trace_mark(THINGSOS_MARK_IO_LOCKED);
         uint64_t io_wait_ms = now() - io_wait_at;
         if (io_wait_ms >= 100)
             ESP_LOGI("ThingsOS_reader", "UI IO wait=%u ms", (unsigned)io_wait_ms);
@@ -3869,6 +4125,7 @@ void app_main(void) {
         online_poll();
         app_poll();
         ble_input_poll();
+        thingsos_board_trace_mark(THINGSOS_MARK_APP_POLLED);
         bool was_alarm=alarm_active();
         alarm_poll();
         if(!was_alarm&&alarm_active()){
@@ -3876,14 +4133,17 @@ void app_main(void) {
         }
         reading_power_poll();
         wifi_scan_step();
+        thingsos_board_trace_mark(THINGSOS_MARK_ALARM_POLLED);
         unsigned power_key = thingsos_board_power_key();
         if (power_key) {
             power_action(power_key);
             pressed = dragging = held = moved = input_contact = false;
             memset(&keys, 0, sizeof(keys));
         }
+        thingsos_board_trace_mark(THINGSOS_MARK_POWER_KEY);
         if (app.asleep) {
             xSemaphoreGive(thingsos_io_lock);
+            thingsos_board_trace_mark(THINGSOS_MARK_SLEEP_WAIT);
             thingsos_board_sleep_wait();
             continue;
         }
@@ -3899,13 +4159,14 @@ void app_main(void) {
         }
         thingsos_board_touch_buffer(buffered_touch_page(app.page) || app.controls_open ||
             app.page==THINGSOS_UI_APPS || app.page==THINGSOS_UI_SYSTEM || app.page==THINGSOS_UI_RECORDER || app.page==THINGSOS_UI_MUSIC ||
-            app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX || (app.page==THINGSOS_UI_LIBRARY && app.library_weidu));
+            app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX || app.page==THINGSOS_UI_FLOMO || (app.page==THINGSOS_UI_LIBRARY && app.library_weidu));
         network_connection_poll();
         upgrade_poll();
         bool present = media();
         if (app.sd_seen && !present) {
             thingsos_ima_quiesce_locked();
             thingsos_cubox_quiesce_locked();
+            thingsos_flomo_quiesce_locked();
             app.cache_names_migrated=false;app.file_action_open=false;app.file_more=false;
             if(thingsos_weidu_busy()) thingsos_weidu_cancel();
             thingsos_network_card(0);
@@ -4044,6 +4305,7 @@ void app_main(void) {
                     if (abs(dy) > 40 && abs(dy) > abs(last_x - initial_x) && !(app.page==THINGSOS_UI_FILES && file_picture.open)) {
                         if(app.page==THINGSOS_UI_WEIDU)weidu_scroll(dy);
                         else if(app.page==THINGSOS_UI_CUBOX)cubox_scroll(dy);
+                        else if(app.page==THINGSOS_UI_FLOMO)flomo_scroll(dy);
                         else {
                         size_t count = 0, step = 5;
                         size_t before=app.list_start;
@@ -4128,10 +4390,12 @@ void app_main(void) {
             vTaskDelay(pdMS_TO_TICKS(1));continue;
         }
         if (app.dirty && !awaiting_release && (app.ui_action_at || now() - refresh_at >= 120)) {
+            thingsos_board_trace_mark(THINGSOS_MARK_DRAW);
             bool pin_region=pin_input_frame();
             bool system_region=app_system_region();
             bool audio_region=app_audio_region();
             bool cubox_region=app_cubox_region();
+            bool flomo_region=app_flomo_region();
             bool bluetooth_region=bt_ui_region();
             bool loading_region=online_modal_visible() && online.painted && !app.force_refresh && !app.transition_refresh && !app.feedback_refresh;
             bool wave_requested = reader_wave_requested();
@@ -4191,8 +4455,9 @@ void app_main(void) {
             }
             reader_cache_output_begin();
             thingsos_board_static_page(ui_static_panel_page());
+            thingsos_board_trace_mark(THINGSOS_MARK_PRESENT);
             e = app.lock_wave_pending ? present_lock_transition() : pin_region?thingsos_board_present_pin_input(&app.canvas):
-                (online_modal_visible() || online.cleanup)?online_modal_present_frame(loading_region):system_region?app_system_present():audio_region?app_audio_present():cubox_region?app_cubox_present():bluetooth_region?bt_ui_present():app.feedback_refresh
+                (online_modal_visible() || online.cleanup)?online_modal_present_frame(loading_region):system_region?app_system_present():audio_region?app_audio_present():cubox_region?app_cubox_present():flomo_region?app_flomo_present():bluetooth_region?bt_ui_present():app.feedback_refresh
                 ? (app.page==THINGSOS_UI_READING?thingsos_board_present_reader_background(&app.canvas):thingsos_board_present(&app.canvas))
                 : app.controls_open || app.controls_refresh
                 ? thingsos_board_present_controls(&app.canvas)
@@ -4215,6 +4480,7 @@ void app_main(void) {
             app_system_presented(e==ESP_OK);
             app_audio_presented(e==ESP_OK);
             app_cubox_presented(e==ESP_OK);
+            app_flomo_presented(e==ESP_OK);
             bt_ui_presented(e==ESP_OK);
             online_modal_presented(e==ESP_OK);
             volume_overlay_presented(e==ESP_OK);
@@ -4225,6 +4491,8 @@ void app_main(void) {
             app.input_refresh = false;
             app.weidu_progress_refresh = false;
             app.dirty = false;
+            thingsos_board_trace_mark(THINGSOS_MARK_PRESENT_DONE);
+            if(e==ESP_OK)thingsos_board_trace_awake();
             app.reader_background_refresh=false;
             refresh_at = now();
             reader_cache_after = refresh_at + 80;
@@ -4259,8 +4527,9 @@ void app_main(void) {
         /* Prepare the immediately useful page before whole-book indexing
            seeks through unrelated chapters of an SD font. */
         bool input_idle=reader_input_can_idle(&keys,input_contact,pressed,thingsos_board_touch_contact_pending());
-        thingsos_wd_device_poll(app.wd_push_on && !online_pending() && app.page!=THINGSOS_UI_WEIDU && app.page!=THINGSOS_UI_CUBOX &&
-            !(app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX)) &&
+        thingsos_wd_device_poll(app.wd_push_on && !online_pending() && app.page!=THINGSOS_UI_WEIDU && app.page!=THINGSOS_UI_CUBOX && app.page!=THINGSOS_UI_FLOMO &&
+            !(app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX ||
+                                                 app.input_return==THINGSOS_UI_FLOMO)) &&
             !app.dirty && !app.asleep && input_idle && !dragging &&
             !thingsos_board_touch_pending() && now()>=app.activity_at+2000 && !app.wd_power_action);
         thingsos_wd_rt_poll(app.wd_rt_on && app.wd_time_on && app.wd_time_confirmed,
@@ -4286,8 +4555,9 @@ void app_main(void) {
             if (!app.dirty && !app.force_refresh && !app.transition_refresh && !app.ui_action_at &&
                 (app.page==THINGSOS_UI_LIBRARY || app.page==THINGSOS_UI_TRANSFER || app.page==THINGSOS_UI_SETTINGS ||
                  (online_modal_visible() && app.canvas.width==684) ||
-                 (!app.controls_open && (app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX ||
-                  (app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX)))))) {
+                 (!app.controls_open && (app.page==THINGSOS_UI_WEIDU || app.page==THINGSOS_UI_CUBOX || app.page==THINGSOS_UI_FLOMO ||
+                  (app.page==THINGSOS_UI_PASSWORD && (app.input_return==THINGSOS_UI_WEIDU || app.input_return==THINGSOS_UI_CUBOX ||
+                                                      app.input_return==THINGSOS_UI_FLOMO)))))) {
                 app.font.ui_size_percent=(app.ui_px ? app.ui_px : 30)*100/30;
                 app.font.ui_weight_override=app.ui_weight+1;
                 thingsos_font_weight(&app.font,0);

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 /* Host harness replaces hardware only; draws and taps execute the real controller. */
 #pragma once
+/* PSRAM placement attribute has no meaning on the host. */
+#ifndef EXT_RAM_BSS_ATTR
+#define EXT_RAM_BSS_ATTR
+#endif
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +22,7 @@
 #include "thingsos/ble_discovery.h"
 #include "thingsos/ima.h"
 #include "thingsos/cubox.h"
+#include "thingsos/flomo.h"
 #include "thingsos/tilt.h"
 #include "thingsos/network_state.h"
 #include "thingsos/release.h"
@@ -93,7 +98,9 @@ static int thingsos_board_present_loading(const thingsos_canvas_t* c,int x,int y
 }
 static void thingsos_weidu_state(thingsos_weidu_status_t* s) {*s=host_weidu;}
 static bool thingsos_weidu_busy(void) {return host_weidu.busy;}
+static bool host_weidu_start_refused;
 static bool thingsos_weidu_start(thingsos_weidu_action_t a,const thingsos_weidu_book_t* b) {
+    if(host_weidu_start_refused){++host_weidu_calls;return false;}
     (void)b;host_weidu_action=a;++host_weidu_calls;host_weidu.busy=true;
     host_weidu.background=a==WD_DEVICE_COVERS || a==WD_DEVICE_CHAPTER || a==WD_DEVICE_SEARCH ||
         (a>=WD_DEVICE_NOTES && a<=WD_DEVICE_THOUGHTS) || (a>=WD_DEVICE_ENTER && a<=WD_DEVICE_NOTE_WRITE);
@@ -210,6 +217,8 @@ static void thingsos_board_frontlight_mix(bool enabled,unsigned level,unsigned w
 static thingsos_audio_status_t host_audio={.volume=40};
 static bool host_audio_deferred,host_audio_record_reject,host_audio_stop_reject,host_audio_pause_deferred;
 static bool thingsos_audio_active(void){return host_audio.state!=THINGSOS_AUDIO_IDLE&&host_audio.state!=THINGSOS_AUDIO_ERROR;}
+/* Playing/recording hold the network claim; a parked playback pause does not. */
+static bool thingsos_audio_claimed(void){return host_audio.state==THINGSOS_AUDIO_PLAYING||host_audio.state==THINGSOS_AUDIO_RECORDING||host_audio.state==THINGSOS_AUDIO_RECORD_PAUSED;}
 static void thingsos_audio_status(thingsos_audio_status_t* s){*s=host_audio;}
 static void thingsos_audio_volume(unsigned v){host_audio.volume=v;}
 static bool thingsos_audio_play(const char* path,uint32_t ms){host_audio.state=host_audio_deferred?THINGSOS_AUDIO_STARTING:THINGSOS_AUDIO_PLAYING;host_audio.position_ms=ms;host_audio.duration_ms=180000;strlcpy(host_audio.path,path,sizeof(host_audio.path));++host_audio.serial;return true;}
@@ -233,6 +242,9 @@ static thingsos_ble_status_t host_ble;
 static bool host_ble_started_before_audio_pause;
 static bool thingsos_ble_scan(bool on){if(on&&host_audio.state==THINGSOS_AUDIO_PLAYING)host_ble_started_before_audio_pause=true;host_ble.scanning=on;++host_ble.serial;return true;}
 static void thingsos_ble_status(thingsos_ble_status_t* out){*out=host_ble;}
+static unsigned host_ble_suspends,host_ble_resumes;
+static bool thingsos_ble_suspend(void){++host_ble_suspends;return true;}
+static void thingsos_ble_resume(void){++host_ble_resumes;}
 static bool host_ble_pair_accept;static uint32_t host_ble_pair_passkey;
 static void thingsos_ble_init(void){}
 static bool thingsos_ble_connect(const thingsos_ble_device_t* d){host_ble.current=host_ble.identity=*d;host_ble.connected=host_ble.bonded=host_ble.hid_ready=true;host_ble.phase=THINGSOS_BLE_CONNECTED;host_ble.pairing=THINGSOS_BLE_PAIR_NONE;thingsos_ble_remember(&host_ble,d);++host_ble.generation;++host_ble.serial;return true;}
@@ -281,6 +293,7 @@ static bool thingsos_cubox_card(unsigned i,thingsos_cubox_card_t* out){if(i>=hos
 static bool thingsos_cubox_detail_copy(const char* id,thingsos_cubox_detail_t* out){if(host_cubox_detail_ok&&!strcmp(host_cubox_detail.card.id,id)){*out=host_cubox_detail;return true;}for(unsigned i=0;i<host_cubox_card_count;++i)if(!strcmp(host_cubox_cards[i].id,id)){memset(out,0,sizeof(*out));out->card=host_cubox_cards[i];return true;}return false;}
 static bool thingsos_cubox_article_path(const char* id,char* out,size_t cap){if(!id||!host_cubox_article[0])return false;strlcpy(out,host_cubox_article,cap);return true;}
 static bool thingsos_cubox_set_filter(thingsos_cubox_filter_t f,const char* fid,const char* fname,const char* q,bool online){(void)online;host_cubox.filter=f;strlcpy(host_cubox.folder_id,fid?fid:"",sizeof(host_cubox.folder_id));strlcpy(host_cubox.folder_name,(fid&&fid[0]&&fname)?fname:"全部文件夹",sizeof(host_cubox.folder_name));strlcpy(host_cubox.query,q?q:"",sizeof(host_cubox.query));++host_cubox.serial;return true;}
+static bool thingsos_cubox_select_slot(unsigned slot){if(slot>1u)return false;host_cubox.slot=slot;++host_cubox.serial;return true;}
 static bool thingsos_cubox_refresh_folders(void){++host_cubox.serial;return host_cubox.configured;}
 static bool thingsos_cubox_refresh_list(bool more){(void)more;++host_cubox.serial;return host_cubox.configured;}
 static bool thingsos_cubox_fetch_detail(const char* id){(void)id;++host_cubox.serial;return host_cubox.configured;}
@@ -290,6 +303,39 @@ static bool thingsos_cubox_archive(const char* id){if(host_cubox_detail_ok&&!str
 static bool thingsos_cubox_delete_cache(const char* id){for(unsigned i=0;i<host_cubox_card_count;++i)if(!strcmp(host_cubox_cards[i].id,id))host_cubox_cards[i].cached=false;if(host_cubox_detail_ok&&!strcmp(host_cubox_detail.card.id,id))host_cubox_detail.card.cached=false;host_cubox_article[0]=0;++host_cubox.serial;return true;}
 static void thingsos_cubox_load_offline(void){}
 static void thingsos_cubox_cancel(void){host_cubox.busy=false;++host_cubox.serial;}
+static thingsos_flomo_status_t host_flomo;
+static thingsos_flomo_memo_t host_flomo_memos[8];
+static thingsos_flomo_tag_t host_flomo_tags[8];
+static thingsos_flomo_memo_t host_flomo_related[4];
+static unsigned host_flomo_fetches,host_flomo_lists;
+static char host_flomo_full[256];
+static void thingsos_flomo_init(void){}
+static void thingsos_flomo_set_network_yield(bool (*yield_locked)(void)){(void)yield_locked;}
+static void thingsos_flomo_status(thingsos_flomo_status_t* out){*out=host_flomo;}
+static bool thingsos_flomo_active(void){return host_flomo.busy;}
+static bool thingsos_flomo_pairing(void){return host_flomo.pairing;}
+static bool thingsos_flomo_pair(bool enabled){host_flomo.pairing=enabled;if(enabled){host_flomo.config_phase=THINGSOS_FLOMO_CONFIG_IDLE;host_flomo.pair_seconds=300;strlcpy(host_flomo.code,"12345678",sizeof(host_flomo.code));}++host_flomo.serial;return true;}
+static void thingsos_flomo_pair_poll(void){}
+static bool thingsos_flomo_disconnect(void){host_flomo.configured=false;host_flomo.memo_count=0;++host_flomo.serial;return true;}
+static bool thingsos_flomo_quiesce_locked(void){host_flomo.busy=false;host_flomo.pairing=false;return true;}
+static bool thingsos_flomo_memo(unsigned i,thingsos_flomo_memo_t* out){if(i>=host_flomo.memo_count)return false;*out=host_flomo_memos[i];return true;}
+static bool thingsos_flomo_tag(unsigned i,thingsos_flomo_tag_t* out){if(i>=host_flomo.tag_count)return false;*out=host_flomo_tags[i];return true;}
+static bool thingsos_flomo_related(unsigned i,thingsos_flomo_memo_t* out){if(i>=host_flomo.related_count)return false;*out=host_flomo_related[i];return true;}
+static bool thingsos_flomo_detail_copy(const char* id,thingsos_flomo_memo_t* memo,char* content,size_t cap,size_t* len,bool* complete){
+    for(unsigned i=0;i<host_flomo.memo_count+host_flomo.related_count;++i){
+        const thingsos_flomo_memo_t* m=i<host_flomo.memo_count?&host_flomo_memos[i]:&host_flomo_related[i-host_flomo.memo_count];
+        if(strcmp(m->id,id))continue;
+        *memo=*m;bool full=host_flomo_full[0]&&!strcmp(host_flomo.related_for,id);
+        strlcpy(content,full?host_flomo_full:m->preview,cap);if(len)*len=strlen(content);if(complete)*complete=full||!m->truncated;return true;
+    }
+    return false;
+}
+static bool thingsos_flomo_set_filter(thingsos_flomo_mode_t mode,const char* tag,const char* query,bool online){host_flomo.mode=mode;strlcpy(host_flomo.tag,tag?tag:"",sizeof(host_flomo.tag));strlcpy(host_flomo.query,query?query:"",sizeof(host_flomo.query));if(online)++host_flomo_lists;++host_flomo.serial;return true;}
+static bool thingsos_flomo_refresh_list(bool more){(void)more;++host_flomo_lists;++host_flomo.serial;return host_flomo.configured;}
+static bool thingsos_flomo_refresh_tags(void){++host_flomo.serial;return host_flomo.configured;}
+static bool thingsos_flomo_fetch_detail(const char* id){++host_flomo_fetches;strlcpy(host_flomo.active_id,id,sizeof(host_flomo.active_id));++host_flomo.serial;return host_flomo.configured;}
+static void thingsos_flomo_load_offline(void){}
+static void thingsos_flomo_cancel(void){host_flomo.busy=false;++host_flomo.serial;}
 static void thingsos_board_haptic(unsigned ms) {host_haptic_ms=ms;}
 static unsigned host_ai_key;
 static unsigned thingsos_board_side_key(void) {unsigned k=host_side_key;host_side_key=0;return k;}
@@ -463,6 +509,15 @@ static int thingsos_board_suspend(const thingsos_canvas_t* c) {
     return host_suspend_failure;
 }
 static int thingsos_board_resume(void) {host_resume++;return 0;}
+static unsigned host_trace_awake;
+static void thingsos_board_trace_awake(void){++host_trace_awake;}
+static void thingsos_board_trace_report(void){}
+enum { THINGSOS_MARK_LOOP_TOP=1, THINGSOS_MARK_PAIR_POLLED, THINGSOS_MARK_SERVICE_POLLED, THINGSOS_MARK_IO_LOCK_WAIT,
+    THINGSOS_MARK_IO_LOCKED, THINGSOS_MARK_APP_POLLED, THINGSOS_MARK_ALARM_POLLED, THINGSOS_MARK_POWER_KEY, THINGSOS_MARK_SLEEP_WAIT,
+    THINGSOS_MARK_RESUME_NET=20, THINGSOS_MARK_RESUME_NET_DONE, THINGSOS_MARK_RESUME_UI,
+    THINGSOS_MARK_DRAW=30, THINGSOS_MARK_PRESENT, THINGSOS_MARK_PRESENT_DONE };
+static unsigned host_trace_mark;
+static void thingsos_board_trace_mark(unsigned mark){host_trace_mark=mark;}
 static int thingsos_board_present_lock_transition(const thingsos_canvas_t* c,bool forward){
     (void)c;++host_lock_presents;host_lock_forward=forward;return host_lock_result;
 }
@@ -491,8 +546,8 @@ static const char* thingsos_network_failure(void) {return "";}
 static const char* thingsos_board_charge(void) {return "未充电";}
 static bool host_charging;
 static bool thingsos_board_charging(void) {return host_charging;}
-static unsigned host_battery=100;
-static unsigned thingsos_board_battery(void) {return host_battery;}
+static int host_battery=100;
+static int thingsos_board_battery(void) {return host_battery;}
 
 static void thingsos_network_maintenance(void) {}
 static char host_saved_wifi[33];

@@ -94,6 +94,14 @@ bool thingsos_remote_directory(const char* p) {
     }
     return true;
 }
+bool thingsos_upload_name(const char* name) {
+    if(!name || !*name)return false;
+    size_t n=strlen(name);
+    if(n>190 || *name=='.' || *name==' ' || name[n-1]=='.' || name[n-1]==' ')return false;
+    for(const unsigned char* c=(const unsigned char*)name;*c;++c)
+        if(*c<32 || *c==127)return false;
+    return !strpbrk(name,"/\\:*?\"<>|");
+}
 bool thingsos_managed_name(const char* name) {
     if(!name || !*name || *name=='.' || *name==' ' || strlen(name)>96 ||
        strpbrk(name,"/\\:*?\"<>|"))return false;

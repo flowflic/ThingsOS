@@ -344,7 +344,7 @@ static void management_network(void) {
     if (!app.opened && app.page == THINGSOS_UI_READING) navigate(THINGSOS_UI_LIBRARY);
 }
 static bool transfer_blocks_ui(void) {
-    return thingsos_network_busy() && !thingsos_audio_active() && !thingsos_ima_active() && !thingsos_cubox_active() && !thingsos_weidu_busy() && !thingsos_network_release_checking();
+    return thingsos_network_busy() && !thingsos_audio_active() && !thingsos_ima_active() && !thingsos_cubox_active() && !thingsos_flomo_active() && !thingsos_weidu_busy() && !thingsos_network_release_checking();
 }
 static void transfer_activity(uint64_t time){
     /* File transfer is activity even without a touch. Restart the existing

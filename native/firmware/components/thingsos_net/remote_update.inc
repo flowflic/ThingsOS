@@ -5,7 +5,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <sys/socket.h>
-static thingsos_release_state_t release_state;
+static EXT_RAM_BSS_ATTR thingsos_release_state_t release_state; /* status text, not flashed data */
 static bool release_metadata_owned;
 static size_t release_received;
 static int release_error;

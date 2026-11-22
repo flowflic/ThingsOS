@@ -52,7 +52,8 @@ bool thingsos_board_touch_pending(void);
 bool thingsos_board_touch_contact_pending(void);
 bool thingsos_board_touch(thingsos_touch_t* touch, uint64_t* sampled_ms);
 bool thingsos_board_font(thingsos_font_t* font);
-unsigned thingsos_board_battery(void);
+/* 0..100, or -1 while the gauge settles after boot/wake (hide it). */
+int thingsos_board_battery(void);
 void thingsos_board_ascii(thingsos_canvas_t* canvas, const char* text, int x, int y);
 
 void thingsos_board_healthy(void);
@@ -81,6 +82,41 @@ unsigned thingsos_board_ai_key(void);
 esp_err_t thingsos_board_suspend(const thingsos_canvas_t* sleep_frame);
 esp_err_t thingsos_board_resume(void);
 void thingsos_board_sleep_wait(void);
+/* Power-stage breadcrumbs kept in RTC memory across watchdog resets (sleep_trace.c). */
+enum {
+    THINGSOS_TRACE_BOOT = 0,
+    THINGSOS_TRACE_SUSPEND_BEGIN = 1,
+    THINGSOS_TRACE_SUSPEND_DONE = 2,
+    THINGSOS_TRACE_SLEEP_ENTER = 3,
+    THINGSOS_TRACE_SLEEP_RETURN = 4,
+    THINGSOS_TRACE_USB_IDLE = 5,
+    THINGSOS_TRACE_RESUME_BEGIN = 6,
+    THINGSOS_TRACE_RESUME_DONE = 7,
+    THINGSOS_TRACE_AWAKE = 8
+};
+void thingsos_board_trace_stage(unsigned stage);
+void thingsos_board_trace_sleep_return(uint32_t causes, int err);
+void thingsos_board_trace_awake(void);
+/* Finer main-loop / resume / draw positions for the reset trace. */
+enum {
+    THINGSOS_MARK_LOOP_TOP = 1,
+    THINGSOS_MARK_PAIR_POLLED = 2,
+    THINGSOS_MARK_SERVICE_POLLED = 3,
+    THINGSOS_MARK_IO_LOCK_WAIT = 4,
+    THINGSOS_MARK_IO_LOCKED = 5,
+    THINGSOS_MARK_APP_POLLED = 6,
+    THINGSOS_MARK_ALARM_POLLED = 7,
+    THINGSOS_MARK_POWER_KEY = 8,
+    THINGSOS_MARK_SLEEP_WAIT = 9,
+    THINGSOS_MARK_RESUME_NET = 20,
+    THINGSOS_MARK_RESUME_NET_DONE = 21,
+    THINGSOS_MARK_RESUME_UI = 22,
+    THINGSOS_MARK_DRAW = 30,
+    THINGSOS_MARK_PRESENT = 31,
+    THINGSOS_MARK_PRESENT_DONE = 32
+};
+void thingsos_board_trace_mark(unsigned mark);
+void thingsos_board_trace_report(void);
 /* Power IC shutdown; returns only on failure (e.g. still on USB power). */
 esp_err_t thingsos_board_power_off(void);
 

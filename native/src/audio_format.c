@@ -51,3 +51,7 @@ size_t thingsos_audio_resample(thingsos_audio_resampler_t* r,const int16_t* inpu
     }
     return n;
 }
+uint64_t thingsos_audio_resume_byte(uint64_t source_size,uint64_t unread,uint64_t buffered){
+    uint64_t read=source_size>unread?source_size-unread:0;
+    return buffered<read?read-buffered:0;
+}

@@ -20,7 +20,22 @@ static void txt_source_controller_test(void) {
     CHECK(app.epub_open&&app.epub.plain_text&&app.epub.text_encoding==1);
     size_t offset=app.epub.spine[3]+5;
     CHECK(reader_restore_source(0,offset)&&app.chapter_index==3&&app.start==5);
-    CHECK(app.chapter.source_start==app.epub.spine[3]);release_book();
+    CHECK(app.chapter.source_start==app.epub.spine[3]);
+    /* Backward across a chapter boundary before the page index is complete:
+       first turn lands on the previous chapter's last page, the second on its
+       second-to-last page (not on the chapter before). */
+    {
+        CHECK(load_chapter(3)&&app.start==0);app.pagination_valid=false;
+        next_page(false);
+        size_t last=app.start;
+        CHECK(app.chapter_index==2&&last>0&&app.history_count>0);
+        next_page(false);
+        CHECK(app.chapter_index==2&&app.start<last);
+        app.end=page_end(&app.chapter,app.start); /* set by draw() on device */
+        next_page(true);
+        CHECK(app.chapter_index==2&&app.start==last);
+    }
+    release_book();
     const char* real=getenv("THINGSOS_TXT_ACCEPTANCE");
     if(real&&*real)for(unsigned i=0;i<2;++i) {
         const char* name=i?"xiuzhen":"xianni";

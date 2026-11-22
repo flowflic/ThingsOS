@@ -523,6 +523,22 @@ static void snapshot(const char* name) {
     draw();
     canvas_snapshot(name);
 }
+/* A playing audio session holds the exclusive network claim: a refused WeRead
+   start names it instead of the generic network/memory/transfer hint. */
+static void weidu_audio_claim_message_test(void) {
+    bool sd=host_sd,net=host_network_connected,busy=host_weidu.busy;
+    thingsos_audio_state_t audio=host_audio.state;
+    host_sd=host_network_connected=true;host_weidu.busy=false;host_weidu_start_refused=true;
+    host_audio.state=THINGSOS_AUDIO_PLAYING;app.message[0]=0;
+    CHECK(!weidu_begin(WD_DEVICE_RT_AUTH,NULL) && strstr(app.message,"音频占用网络"));
+    /* A parked playback pause released the claim: no audio blame. */
+    host_audio.state=THINGSOS_AUDIO_PLAY_PAUSED;app.message[0]=0;
+    CHECK(!weidu_begin(WD_DEVICE_RT_AUTH,NULL) && strstr(app.message,"微读启动失败"));
+    host_audio.state=THINGSOS_AUDIO_IDLE;app.message[0]=0;
+    CHECK(!weidu_begin(WD_DEVICE_RT_AUTH,NULL) && strstr(app.message,"微读启动失败"));
+    host_weidu_start_refused=false;host_audio.state=audio;
+    host_sd=sd;host_network_connected=net;host_weidu.busy=busy;app.message[0]=0;
+}
 /* A notice raised from a handled tap must still expire on its own. */
 static void transient_message_test(void) {
     bool sd=host_sd;host_sd=true;
@@ -538,6 +554,23 @@ static void transient_message_test(void) {
     say("hidden before expiry");app.message[0]=0;app.dirty=false;
     host_clock_us+=3001000;message_expire_poll();CHECK(!app.dirty && !app.message_until);
     app.page=page;app.dirty=dirty;app.message_until=until;host_sd=sd;
+}
+/* Tap reading space that is certainly outside the open footnote card. */
+static void footnote_tap_outside(void) {
+    int below=app.footnote_card_top+app.footnote_card_height+40;
+    tap(reader_width()/2, below<reader_height()-90?below:app.footnote_card_top-40);
+}
+/* Card placement: the marker's half of the page picks the side; the other side
+   is used only when the preferred side cannot hold the card and is roomier. */
+static void footnote_card_place_test(void) {
+    int room=0;
+    CHECK(footnote_card_below(100,140,90,1130,400,&room) && room==1130-150);
+    CHECK(!footnote_card_below(1000,1040,90,1130,400,&room) && room==990-90);
+    /* Lower half, but too little room above and more below: open below. */
+    CHECK(footnote_card_below(560,600,90,1130,600,&room) && room==1130-610);
+    /* Upper half, card fits neither side: the roomier side above wins. */
+    CHECK(!footnote_card_below(700,740,90,1130,900,&room) && room==690-90);
+    CHECK(footnote_body_height(28,1)==28 && footnote_body_height(28,3)==28+2*44);
 }
 static unsigned region_ink(int top,int bottom) {
     unsigned count=0;
@@ -1812,6 +1845,58 @@ static void audio_refresh_ack_test(void) {
     app.feedback_refresh=saved_feedback;app.controls_refresh=saved_control_refresh;app.lock_wave_pending=saved_wave;
     memcpy(app.message,saved_message,sizeof(app.message));
 }
+static void flomo_controller_test(void) {
+    memset(&host_flomo,0,sizeof(host_flomo));host_flomo_fetches=host_flomo_lists=0;host_flomo_full[0]=0;
+    if(flomo_ui){free(flomo_ui->text);free(flomo_ui);flomo_ui=NULL;}
+    host_network_connected=true;app.flomo_query[0]=0;
+    /* 10th launcher tile (fourth row) opens the flomo welcome screen. */
+    navigate(THINGSOS_UI_APPS);draw();snapshot("apps-ten-tiles");
+    tap(130,820);
+    CHECK(app.page==THINGSOS_UI_FLOMO && flomo_ui && flomo_ui->view==FLOMO_VIEW_LIST);
+    snapshot("flomo-welcome");
+    tap(300,560);CHECK(flomo_ui->view==FLOMO_VIEW_PAIR && host_flomo.pairing);
+    draw();snapshot("flomo-pair");
+    tap(300,1000);CHECK(flomo_ui->view==FLOMO_VIEW_LIST && !host_flomo.pairing);
+    /* Leaving the app stops pairing; the launcher reopens it. */
+    tap(300,560);CHECK(host_flomo.pairing);navigate(THINGSOS_UI_APPS);CHECK(!host_flomo.pairing);
+    tap(130,820);CHECK(app.page==THINGSOS_UI_FLOMO);
+    /* Connected list: paging, detail with full text fetch and related notes. */
+    host_flomo.configured=true;host_flomo.config_phase=THINGSOS_FLOMO_CONFIG_READY;host_flomo.memo_count=6;
+    for(unsigned i=0;i<6;++i){thingsos_flomo_memo_t* m=&host_flomo_memos[i];memset(m,0,sizeof(*m));
+        snprintf(m->id,sizeof(m->id),"MEMO%08u",i);strlcpy(m->created_at,"2026-11-17T18:45:47+08:00",sizeof(m->created_at));
+        strlcpy(m->tags,i?"#读书":"",sizeof(m->tags));snprintf(m->preview,sizeof(m->preview),"第 %u 条笔记的内容预览，用于检查列表排版与换行是否正常。",i+1);m->truncated=i==0;}
+    ++host_flomo.serial;flomo_poll();draw();snapshot("flomo-list");
+    CHECK(flomo_ui->list_start==0);CHECK(app.page==THINGSOS_UI_FLOMO);CHECK(flomo_ui->view==FLOMO_VIEW_LIST);CHECK(flomo_ui->status.memo_count==6);CHECK(!app.message[0]);
+    /* Variable-height cards: the next page starts after the cards shown; previous returns exactly. */
+    unsigned shown=flomo_ui->shown;CHECK(shown>=2 && shown<6 && flomo_ui->card_count==shown);
+    CHECK(flomo_ui->card_top[0]==FLOMO_CARD_TOP && flomo_ui->card_bottom[shown-1]<=FLOMO_CARD_BOTTOM);
+    tap(550,1040);CHECK(flomo_ui->list_start==shown);draw();CHECK(flomo_ui->shown>=1);tap(100,1040);CHECK(flomo_ui->list_start==0);draw();
+    tap(300,420);CHECK(flomo_ui->view==FLOMO_VIEW_DETAIL && !strcmp(flomo_ui->active_id,"MEMO00000000") && host_flomo_fetches==1);
+    draw();snapshot("flomo-detail-preview");
+    strlcpy(host_flomo_full,"完整正文：第一段。\n- 列表一\n- 列表二",sizeof(host_flomo_full));
+    strlcpy(host_flomo.related_for,"MEMO00000000",sizeof(host_flomo.related_for));host_flomo.related_count=1;
+    host_flomo_related[0]=host_flomo_memos[5];strlcpy(host_flomo_related[0].id,"RELATED00001",sizeof(host_flomo_related[0].id));
+    ++host_flomo.serial;flomo_poll();
+    CHECK(flomo_ui->text_complete && !strncmp(flomo_ui->text,"完整正文",strlen("完整正文")));
+    draw();snapshot("flomo-detail");
+    tap(342,1040);CHECK(flomo_ui->view==FLOMO_VIEW_RELATED);draw();
+    tap(300,420);CHECK(flomo_ui->view==FLOMO_VIEW_DETAIL && !strcmp(flomo_ui->active_id,"RELATED00001"));
+    CHECK(flomo_back() && flomo_ui->view==FLOMO_VIEW_RELATED);
+    CHECK(flomo_back() && flomo_ui->view==FLOMO_VIEW_DETAIL);
+    CHECK(flomo_back() && flomo_ui->view==FLOMO_VIEW_LIST);
+    /* Filters: review, tags view, search editor route. */
+    unsigned lists=host_flomo_lists;
+    tap(240,255);CHECK(host_flomo.mode==THINGSOS_FLOMO_MODE_REVIEW && host_flomo_lists==lists+1);
+    host_flomo.tag_count=1;strlcpy(host_flomo_tags[0].name,"读书",sizeof(host_flomo_tags[0].name));
+    tap(300,255);CHECK(flomo_ui->view==FLOMO_VIEW_TAGS);draw();snapshot("flomo-tags");
+    tap(300,500);CHECK(flomo_ui->view==FLOMO_VIEW_LIST && host_flomo.mode==THINGSOS_FLOMO_MODE_TAG && !strcmp(host_flomo.tag,"读书"));
+    tap(560,255);CHECK(app.page==THINGSOS_UI_PASSWORD && app.input_return==THINGSOS_UI_FLOMO);
+    navigate(THINGSOS_UI_FLOMO);
+    /* Settings and disconnect. */
+    tap(600,150);CHECK(flomo_ui->view==FLOMO_VIEW_SETTINGS);draw();snapshot("flomo-settings");
+    tap(300,880);CHECK(!host_flomo.configured && flomo_ui->view==FLOMO_VIEW_LIST);
+    navigate(THINGSOS_UI_APPS);
+}
 static void cubox_controller_test(const char* fixture_root) {
     bool prev_sd=host_sd;host_sd=true;
     memset(&host_cubox,0,sizeof(host_cubox));
@@ -1911,15 +1996,24 @@ static void cubox_controller_test(const char* fixture_root) {
     CHECK(cubox_ui->view==CUBOX_VIEW_LIST && !host_cubox.pairing && !app.transition_refresh && app_cubox_region());
     snapshot("cubox-list");
 
-    /* Filter tabs: All, Starred, Unread stay differential. */
-    tap(240,250);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_ALL && !app.transition_refresh && app_cubox_region());
-    tap(380,250);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_STARRED && !app.transition_refresh && app_cubox_region());
-    tap(100,250);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_UNREAD && !app.transition_refresh && app_cubox_region());
+    /* Recent tab is the default; its filter chips stay differential. */
+    CHECK(cubox_ui->tab==0 && host_cubox.slot==0);
+    tap(180,330);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_UNREAD && !app.transition_refresh && app_cubox_region());
+    tap(280,330);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_STARRED && !app.transition_refresh && app_cubox_region());
+    tap(80,330);CHECK(host_cubox.filter==THINGSOS_CUBOX_FILTER_ALL && !app.transition_refresh && app_cubox_region());
 
-    /* Folder picker selects Reading / Tech then returns to list without transition flash. */
-    tap(200,320);CHECK(cubox_ui->view==CUBOX_VIEW_FOLDERS && !app.transition_refresh && app_cubox_region());draw();
-    tap(200,312+2*130+40);
-    CHECK(cubox_ui->view==CUBOX_VIEW_LIST && !strcmp(host_cubox.folder_id,"fld_tech") && !app.transition_refresh && app_cubox_region());
+    /* Folders tab: folder list, open Reading / Tech, breadcrumb and back return to the list. */
+    tap(500,250);CHECK(cubox_ui->tab==1 && host_cubox.slot==1 && !cubox_ui->in_folder && !app.transition_refresh && app_cubox_region());
+    draw();snapshot("cubox-folders");
+    tap(200,520);
+    CHECK(cubox_ui->in_folder && !strcmp(host_cubox.folder_id,"fld_tech") && !app.transition_refresh && app_cubox_region());
+    draw();snapshot("cubox-folder-articles");
+    tap(100,330);CHECK(cubox_ui->tab==1 && !cubox_ui->in_folder);
+    tap(200,520);CHECK(cubox_ui->in_folder);
+    CHECK(cubox_back() && app.page==THINGSOS_UI_CUBOX && !cubox_ui->in_folder);
+    tap(100,250);CHECK(cubox_ui->tab==0 && host_cubox.slot==0);
+    tap(500,250);CHECK(cubox_ui->tab==1 && !cubox_ui->in_folder);
+    tap(200,520);CHECK(cubox_ui->in_folder && !strcmp(host_cubox.folder_id,"fld_tech"));
 
     /* Tap card 0 -> detail view -> back arrow must return to list (never Settings), then re-open detail. */
     tap(300,400);
@@ -2049,7 +2143,13 @@ int main(int argc, char** argv) {
     navigate(THINGSOS_UI_DISPLAY);unsigned locked_size=app.px;tap(550,340);
     CHECK(app.px==locked_size && strstr(app.message,"微读"));
     app.activity_at=0;host_weidu.busy=false;++host_weidu.serial;weidu_poll();
-    CHECK(app.activity_at==now());weidu_enter();
+    CHECK(app.activity_at==now());
+    /* A finished background reading report is not user activity: the reader
+       must still lock after the idle interval. */
+    host_weidu.busy=true;host_weidu.background=true;++host_weidu.serial;weidu_poll();
+    app.activity_at=1;host_weidu.busy=false;++host_weidu.serial;weidu_poll();
+    CHECK(app.activity_at==1);host_weidu.background=false;
+    weidu_enter();
     host_weidu.authenticated=true;host_weidu.phase=WD_READY;host_weidu.count=5;++host_weidu.serial;
     weidu_poll();CHECK(app.weidu_count==4 && app.weidu_total==5);snapshot("weidu-shelf");
     unsigned shelf_reads=host_weidu_search_calls;
@@ -2544,7 +2644,7 @@ int main(int argc, char** argv) {
     CHECK(app.page == THINGSOS_UI_POWER);
     CHECK(app.lock_wallpaper==0);tap(460,490);CHECK(app.page==THINGSOS_UI_POWER);
     navigate(THINGSOS_UI_APPS);tap(330,680);CHECK(app.page==THINGSOS_UI_WALLPAPER);
-    snapshot("wallpaper-sources");tap(120,340);CHECK(app.wallpaper_step==3 && app.lock_wallpaper==0);
+    snapshot("wallpaper-sources");tap(120,700);CHECK(app.wallpaper_step==3 && app.lock_wallpaper==0);
     snapshot("wallpaper-stats-preview");host_nvs_available=true;
     tap(500,1140);CHECK(app.page==THINGSOS_UI_APPS && app.lock_wallpaper==0);host_nvs_available=false;
     navigate(THINGSOS_UI_POWER);snapshot("power");
@@ -2554,6 +2654,12 @@ int main(int argc, char** argv) {
     tap(300, 1100);capacitive_key(THINGSOS_KEY_HOME);CHECK(app.asleep);
     power_action(1);
     CHECK(!app.asleep && app.page == THINGSOS_UI_POWER);
+    /* Wake hides the stale battery until the gauge recalibrates; the next
+       5 s status check then requests a refresh with the new value. */
+    CHECK(app.battery<0);
+    {int saved_host=host_battery;host_battery=-1;
+     CHECK(!status_refresh_due(app.charge_checked+5000) || app.battery<0);
+     host_battery=saved_host;CHECK(status_refresh_due(app.charge_checked+5000) && app.battery==host_battery);}
     navigate(THINGSOS_UI_FONTS);
     font_preview(-1);
     void* original = app.font.face;
@@ -2933,7 +3039,12 @@ int main(int argc, char** argv) {
         CHECK(app.footnote_open && app.footnote_index == 0 && app.footnote_offset == 0);
         snapshot("footnote-window");
         CHECK(region_ink(300, 700) > 0);
-        tap(300, 150); /* blank space above the window closes it */
+        /* A marker in the upper half opens a one-line card right below it. */
+        CHECK(app.footnote_card_top >= box->y + box->h &&
+              app.footnote_card_top <= box->y + box->h + 20);
+        CHECK(app.footnote_card_height == FOOTNOTE_HEAD + FOOTNOTE_FOOT +
+              footnote_body_height(reader_annotation_px(), 1));
+        footnote_tap_outside(); /* blank space outside the window closes it */
         CHECK(!app.footnote_open);
         tap(marker_x, marker_y);
         CHECK(app.footnote_open);
@@ -2949,7 +3060,7 @@ int main(int argc, char** argv) {
         snapshot("footnote-window-paged");
         tap(300, 400);
         CHECK(app.footnote_open && app.footnote_offset == first_page);
-        tap(300, 150);
+        footnote_tap_outside();
         CHECK(!app.footnote_open);
         tap(100, 600); /* turning the page dismisses the window */
         CHECK(!app.footnote_open);
@@ -2964,7 +3075,7 @@ int main(int argc, char** argv) {
             tap(target.x+target.w/2,target.y+target.h/2);
             CHECK(app.footnote_open && app.footnote_index==i && app.start==position);
             if(i==1)snapshot("footnote-icon-fixed");else draw();
-            tap(300,150);CHECK(!app.footnote_open);
+            footnote_tap_outside();CHECK(!app.footnote_open);
         }
         app.chapter.footnotes[1].note_bytes=0;draw();thingsos_text_hit_t target=app.text_hits.items[1];size_t position=app.start;
         tap(target.x+target.w/2,target.y+target.h/2);CHECK(!app.footnote_open && app.start==position && strstr(app.message,"脚注"));
@@ -3021,6 +3132,19 @@ int main(int argc, char** argv) {
     CHECK(app.page==THINGSOS_UI_LIBRARY && app.library_weidu && library_visible_count()==1);
     CHECK(library_sorted(0)==11 && library_sorted(1)==app.book_count && library_hit(100,400)==11);
     snapshot("library-weread-list");
+    {
+        /* Largest UI font (50 px, 167%): each tab keeps both glyphs. */
+        unsigned saved_px=app.ui_px;app.ui_px=50;snapshot("library-tabs-font50");
+        const int boxes[3][2]={{LIBRARY_TAB_X,LIBRARY_TAB_W},{LIBRARY_TAB_X+LIBRARY_TAB_W,LIBRARY_TAB_W},{540,124}};
+        for(unsigned b=0;b<3;++b) {
+            int left=-1,right=-1;
+            for(int x=boxes[b][0];x<boxes[b][0]+boxes[b][1];++x)
+                for(int y=105;y<170;++y)
+                    if(app.canvas.pixels[(size_t)y*app.canvas.width+x]<128){if(left<0)left=x;right=x;break;}
+            CHECK(left>=0 && right-left>=70);
+        }
+        app.ui_px=saved_px;draw();
+    }
     thingsos_weidu_status_t saved_weidu_status=host_weidu;
     host_weidu.authenticated=true;host_weidu.busy=false;app.weidu=host_weidu;
     CHECK(weidu_hold_delay(100,400)==1000 && !weidu_release_hold(100,400,999));
@@ -3700,7 +3824,7 @@ int main(int argc, char** argv) {
     thingsos_footnote_t wide_note={app.start,app.start+3,0,6000};
     app.chapter.footnotes=&wide_note;app.chapter.footnote_count=1;app.chapter.notes=wide_note_text;app.chapter.notes_bytes=6000;
     app.footnote_open=true;app.footnote_index=app.footnote_offset=0;reader_cache_clear();snapshot("landscape-footnote");
-    CHECK(app.footnote_next>0 && app.footnote_next<6000 && app.footnote_card_height+FOOTNOTE_CARD_TOP<=684);
+    CHECK(app.footnote_next>0 && app.footnote_next<6000 && app.footnote_card_height+app.footnote_card_top<=684 && app.footnote_card_top>=reader_body_top());
     size_t note_start=app.footnote_next;tap(1100,300);CHECK(app.footnote_open && app.footnote_offset==note_start);
     tap(1210,650);CHECK(!app.footnote_open);
     app.chapter.footnotes=old_notes;app.chapter.footnote_count=old_note_count;app.chapter.notes=old_note_text;app.chapter.notes_bytes=old_note_bytes;
@@ -3801,15 +3925,20 @@ int main(int argc, char** argv) {
     navigate(THINGSOS_UI_POWER);tap(460,490);CHECK(app.page==THINGSOS_UI_POWER);
     navigate(THINGSOS_UI_APPS);snapshot("apps-wallpaper-entry");tap(330,680);
     CHECK(app.page==THINGSOS_UI_WALLPAPER && app.wallpaper_step==0);snapshot("wallpaper-app");
-    tap(40,120);CHECK(app.page==THINGSOS_UI_APPS);tap(330,680);tap(300,480);
+    tap(40,120);CHECK(app.page==THINGSOS_UI_APPS);tap(330,680);tap(300,830);
     CHECK(app.wallpaper_step==1);snapshot("wallpaper-book-list");
-    tap(300,340);CHECK(app.wallpaper_step==3 && app.lock_wallpaper==0);
+    tap(130,400);CHECK(app.wallpaper_step==3 && app.lock_wallpaper==0);
     snapshot("wallpaper-book-preview");CHECK(app.wallpaper_preview_ok);
     tap(120,1140);CHECK(app.wallpaper_step==1 && app.lock_wallpaper==0);
-    tap(300,340);draw();host_nvs_commit_fail=true;tap(500,1140);
+    tap(130,400);draw();host_nvs_commit_fail=true;tap(500,1140);
     CHECK(app.page==THINGSOS_UI_WALLPAPER && app.lock_wallpaper==0 && strstr(app.message,"保存失败"));
     host_nvs_commit_fail=false;tap(500,1140);
     CHECK(app.page==THINGSOS_UI_APPS && app.lock_wallpaper==1 && app.wallpaper_book.id==881);
+    tap(330,680);CHECK(app.page==THINGSOS_UI_WALLPAPER && app.wallpaper_step==0);snapshot("wallpaper-home-current");
+    tap(300,500);CHECK(app.wallpaper_step==3 && wallpaper_view_only && app.wallpaper_kind==1);snapshot("wallpaper-view-current");
+    tap(300,1110);CHECK(app.wallpaper_step==0 && !wallpaper_view_only && app.lock_wallpaper==1);
+    tap(300,830);CHECK(app.wallpaper_step==1);snapshot("wallpaper-book-grid");
+    tap(40,120);CHECK(app.wallpaper_step==0);navigate(THINGSOS_UI_APPS);
     app.recent_count=1;app.recent_ids[0]=999;strcpy(app.books[0].path,"missing-other-book.epub");
     lock_draw(0);
     CHECK(app.wallpaper_book.id==881 && app.canvas.pixels[300u*684]==0 && app.canvas.pixels[300u*684+1]==255);
@@ -3818,17 +3947,17 @@ int main(int argc, char** argv) {
     CHECK(!wallpaper_image_path("/sdcard/wallpapers/../books/a.png"));
     CHECK(!wallpaper_image_path("/sdcard/wallpapers/a.txt"));
     navigate(THINGSOS_UI_WALLPAPER);app.wallpaper_step=2;app.wallpaper_start=0;
-    strcpy(app.browser.path,"/sdcard/wallpapers");app.browser.count=5;
-    for(size_t i=0;i<5;++i) {
+    strcpy(app.browser.path,"/sdcard/wallpapers");app.browser.count=8;
+    for(size_t i=0;i<8;++i) {
         snprintf(app.browser.entries[i].name,sizeof(app.browser.entries[i].name),"wallpaper-%u.png",(unsigned)i);
         app.browser.entries[i].directory=false;
     }
     app.browser.entries[1].directory=true;
-    CHECK(wallpaper_card_at(100,400)==0 && wallpaper_card_at(450,400)==1);
-    CHECK(wallpaper_card_at(100,700)==2 && wallpaper_card_at(450,700)==3);
-    CHECK(wallpaper_card_at(340,400)==SIZE_MAX && wallpaper_card_at(100,615)==SIZE_MAX);
+    CHECK(wallpaper_card_at(130,400)==0 && wallpaper_card_at(340,400)==1 && wallpaper_card_at(550,400)==2);
+    CHECK(wallpaper_card_at(130,750)==3 && wallpaper_card_at(340,750)==4 && wallpaper_card_at(550,750)==5);
+    CHECK(wallpaper_card_at(236,400)==SIZE_MAX && wallpaper_card_at(130,640)==SIZE_MAX);
     CHECK(!app_hold(100,400,649) && !wallpaper_delete_path[0]);
-    CHECK(!app_hold(450,400,700));
+    CHECK(!app_hold(340,400,700));
     snapshot("wallpaper-image-cards");
     CHECK(app_hold(100,400,700) && !strcmp(wallpaper_delete_path,"/sdcard/wallpapers/wallpaper-0.png"));
     snapshot("wallpaper-delete-confirm");tap(100,690);CHECK(!wallpaper_delete_path[0] && app.wallpaper_step==2);
@@ -3836,20 +3965,22 @@ int main(int argc, char** argv) {
     strcpy(app.wallpaper_image,wallpaper_delete_path);tap(100,830);
     CHECK(wallpaper_delete_path[0] && strstr(app.message,"正在使用"));
     tap(40,120);CHECK(!wallpaper_delete_path[0]);app.lock_wallpaper=1;
-    tap(550,1000);CHECK(app.wallpaper_start==4);tap(100,1000);CHECK(!app.wallpaper_start);
-    tap(450,700);CHECK(app.wallpaper_step==3 && strstr(app.wallpaper_candidate_image,"wallpaper-3.png"));
+    tap(550,1070);CHECK(app.wallpaper_start==6);tap(100,1070);CHECK(!app.wallpaper_start);
+    tap(130,750);CHECK(app.wallpaper_step==3 && strstr(app.wallpaper_candidate_image,"wallpaper-3.png"));
     char card_source[640];snprintf(card_source,sizeof(card_source),"%s/picture.png",fixture_root);
-    CHECK(wallpaper_thumbnail(card_source,48,308,270,244));
-    const thingsos_thumbnail_t* card_thumb=thingsos_thumbnail_find(&app.thumbnails,identity(card_source),270,244);
+    CHECK(wallpaper_thumbnail(card_source,36,296,188,280));
+    const thingsos_thumbnail_t* card_thumb=thingsos_thumbnail_find(&app.thumbnails,identity(card_source),WALL_THUMB,WALL_THUMB);
     CHECK(card_thumb && card_thumb->pixels && card_thumb->version==thingsos_cover_source_stamp(card_source));
-    unsigned char* card_pixels=malloc(270u*244u);CHECK(card_pixels);
-    memcpy(card_pixels,card_thumb->pixels,270u*244u);
-    for(unsigned i=0;i<4;++i)if(i!=1) {
+    unsigned card_w=card_thumb->width,card_h=card_thumb->height;
+    unsigned char* card_pixels=malloc((size_t)card_w*card_h);CHECK(card_pixels);
+    memcpy(card_pixels,card_thumb->pixels,(size_t)card_w*card_h);
+    for(unsigned i=0;i<6;++i)if(i!=1) {
         char path[THINGSOS_RECORD_PATH_BYTES];CHECK(thingsos_browser_path(&app.browser,i,path));
-        CHECK(thingsos_thumbnail_store(&app.thumbnails,identity(path),270,244,card_pixels,270,244));
+        CHECK(thingsos_thumbnail_store(&app.thumbnails,identity(path),WALL_THUMB,WALL_THUMB,card_pixels,card_w,card_h));
     }
     free(card_pixels);app.wallpaper_step=2;snapshot("wallpaper-image-covers");
-    CHECK(app.canvas.pixels[299u*684+48]==255 && app.canvas.pixels[605u*684+48]==255);
+    /* Margins above the grid and the column gutter stay blank. */
+    CHECK(app.canvas.pixels[293u*684+130]==255 && app.canvas.pixels[641u*684+236]==255);
     navigate(THINGSOS_UI_WALLPAPER);app.wallpaper_step=3;app.wallpaper_kind=2;
     strcpy(app.wallpaper_candidate_image,"/sdcard/wallpapers/missing.jpg");
     snapshot("wallpaper-preview-unavailable");CHECK(!app.wallpaper_preview_ok);
@@ -3861,6 +3992,11 @@ int main(int argc, char** argv) {
     char selected_cache[640];snprintf(selected_cache,sizeof(selected_cache),"%s/selected-image.gray",host_lock_cache_root);
     remove(selected_cache);
     char actual_land[640];snprintf(actual_land,sizeof(actual_land),"%s/wallpapers/landscape.png",fixture_root);
+    /* A landscape card is letterboxed inside its 188 x 280 cell: nothing spills into the gutters. */
+    app.canvas.width=684;app.canvas.height=1216;memset(app.canvas.pixels,255,684u*1216u);
+    CHECK(wallpaper_thumbnail(actual_land,248,296,188,280));
+    CHECK(app.canvas.pixels[400u*684+240]==255 && app.canvas.pixels[400u*684+440]==255);
+    CHECK(app.canvas.pixels[290u*684+300]==255 && app.canvas.pixels[580u*684+300]==255 && app.canvas.pixels[400u*684+300]<255);
     uint64_t old_land_stamp=thingsos_cover_source_stamp(actual_land);
     thingsos_canvas_t old_wallpaper={app.canvas.pixels,1216,684,false};
     memset(old_wallpaper.pixels,0,1216u*684u);
@@ -3999,9 +4135,9 @@ int main(int argc, char** argv) {
     /* Approved recording upload flow: explicit send, cancellation, duplicate
        choice and initial connection; no real network/credentials in UI tests. */
     host_sd=true;host_audio=(thingsos_audio_status_t){0};host_network_connected=true;
-    audio_refresh_ack_test();launcher_audio_transfer_test();
+    audio_refresh_ack_test();launcher_audio_transfer_test();footnote_card_place_test();
     navigate(THINGSOS_UI_APPS);snapshot("apps-icons-prototype");
-    for(unsigned icon=0;icon<5;++icon){int x=78+(int)(icon%3)*210,y=150+(int)(icon/3)*233;
+    for(unsigned icon=0;icon<5;++icon){int x=78+(int)(icon%3)*210,y=150+(int)(icon/3)*APP_LAUNCHER_PITCH;
         CHECK(app.canvas.pixels[(size_t)y*684+x]==255); /* rounded, not square */
         CHECK(app.canvas.pixels[(size_t)(y+1)*684+x+54]<128);
     }
@@ -4195,6 +4331,7 @@ int main(int argc, char** argv) {
     tap(300,990+139);CHECK(host_audio.state==THINGSOS_AUDIO_IDLE);app_poll();
     app_controls_set(false);host_audio=(thingsos_audio_status_t){0};app.audio=host_audio;
     transient_message_test();
+    weidu_audio_claim_message_test();
     strlcpy(host_ima.kb_name,"测试知识库",sizeof(host_ima.kb_name));
     navigate(THINGSOS_UI_RECORDER);ima_poll();tap(560,140);CHECK(ima_ui->view==1);
     snapshot("ima-settings");tap(300,580);CHECK(ima_ui->view==3);ima_poll();draw();
@@ -4280,6 +4417,7 @@ int main(int argc, char** argv) {
     txt_source_controller_test();
     system_monitor_controller_test();
     cubox_controller_test(fixture_root);
+    flomo_controller_test();
     thingsos_font_close(&app.font);
     thingsos_font_close(&app.ui_font);
     thingsos_thumbnail_clear(&app.thumbnails);

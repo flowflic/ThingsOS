@@ -107,6 +107,51 @@ int main(int argc,char** argv){
     int xmin=684,xmax=0,ymin=1216,ymax=0;
     for(int y=90;y<132;++y)for(int x=606;x<648;++x)if(c.pixels[y*684+x]<128){if(x<xmin)xmin=x;if(x>xmax)xmax=x;if(y<ymin)ymin=y;if(y>ymax)ymax=y;}
     CHECK(ymax-ymin>xmax-xmin && xmin<=xmax);
+    /* Horizontal justification (2026-11-21 report): a line that wraps early to
+       keep closing punctuation with its character, or that wraps with a little
+       slack, ends flush with the right edge; paragraph-final lines stay ragged.
+       Byte positions are those of the unjustified layout. */
+    {
+        static const char sample[]=
+            "突然说道：“今日你们下一盘座子棋，执白先行。”\n"
+            "两个少年一头雾水，皆不知“座子棋”为何物。\n"
+            "齐先生语速不急不缓，仔细解释过了规矩后，并不繁琐，只是在四星位分别放下黑白两子。\n"
+            "中年人的捻子、落子，动作娴熟，行云流水，让人赏心悦目。\n"
+            "平时最喜欢恪守规矩的青衫少年，听闻“噩耗”后，目瞪口呆，痴痴看着棋盘，最后小心翼翼说道：“先生，如此一来，好像很多定式用不上了。”\n";
+        thingsos_chapter_t* hz=calloc(1,sizeof(*hz));CHECK(hz);hz->text=sample;hz->bytes=strlen(sample);
+        for(unsigned margin=12;margin<=36;margin+=24)for(unsigned size=40;size<=60;size+=4){
+            int width=684-2*(int)margin,right=(int)margin+width;
+            CHECK(thingsos_font_size(&font,size));memset(hits,0,sizeof(*hits));memset(measured,0,sizeof(*measured));
+            c.width=684;c.height=1216;memset(c.pixels,255,plane);
+            size_t end=thingsos_text_page_layout_flow(&font,&c,hz,0,(int)margin,90,width,1040,145,0,true,NULL,NULL,hits,false);
+            CHECK(thingsos_text_page_layout_flow(&font,NULL,hz,0,(int)margin,90,width,1040,145,0,true,NULL,NULL,measured,false)==end);
+            CHECK(measured->glyph_count==hits->glyph_count && !memcmp(hits->glyphs,measured->glyphs,hits->glyph_count*sizeof(hits->glyphs[0])));
+            unsigned flush=0,hung=0;
+            for(size_t i=0;i<hits->glyph_count;++i){
+                thingsos_glyph_hit_t* g=hits->glyphs+i;
+                const unsigned char* u=(const unsigned char*)sample+g->offset;
+                bool point=g->bytes==3 && ((u[0]==0xe3&&u[1]==0x80&&(u[2]==0x81||u[2]==0x82))||(u[0]==0xef&&u[1]==0xbc&&u[2]==0x8c));
+                bool squeezable=point || (g->bytes==3 && ((u[0]==0xe2&&u[1]==0x80&&u[2]==0x9d)||(u[0]==0xef&&u[1]==0xbc&&(u[2]==0x9a||u[2]==0x9b))));
+                CHECK(g->x>=(int)margin && g->x+(squeezable?g->w/2:g->w)<=684-8);
+                bool first=!i || hits->glyphs[i-1].y!=g->y,last=i+1==hits->glyph_count || hits->glyphs[i+1].y!=g->y;
+                if(first && i)CHECK(!point); /* clreq: closing marks never start a line */
+                if(!last)continue;
+                CHECK(!(g->bytes==3&&u[0]==0xe2&&u[1]==0x80&&u[2]==0x9c)); /* nor does an opening quote end one */
+                size_t after=g->offset+g->bytes;
+                if(after>=hz->bytes || sample[after]==10 || i+1==hits->glyph_count)continue;
+                /* Soft-wrapped line: ink flush with the right edge, a point mark may hang a little. */
+                int ink=g->x+(squeezable?g->w/2:g->w);
+                if(squeezable && ink>right){CHECK(point && ink-right<=(int)margin-8 && ink-right<=g->w/2);++hung;}
+                else CHECK(ink==right);
+                ++flush;
+            }
+            CHECK(flush>=4);
+            if(size==52 && margin==36)save(argv[2],"horizontal-justified",&c);
+            if(size==52 && margin==12)save(argv[2],"horizontal-justified-narrow",&c);
+            (void)hung;
+        }
+        free(hz);CHECK(thingsos_font_size(&font,42));
+    }
     thingsos_font_close(&font);free(ch);free(a);free(b);free(horizontal);free(hits);free(sliced);free(measured);
-    puts("PASS: vertical columns, UTF-8 page continuity, horizontal equivalence, portrait/landscape/immersive bounds, resumable pixels/hits, punctuation and upright images");return 0;
+    puts("PASS: vertical columns, UTF-8 page continuity, horizontal equivalence, portrait/landscape/immersive bounds, resumable pixels/hits, punctuation and upright images, flush-right horizontal justification");return 0;
 }

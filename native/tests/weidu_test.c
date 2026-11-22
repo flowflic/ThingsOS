@@ -26,7 +26,7 @@ typedef struct {
     bool cancel;
     unsigned qr, saves, requests;
     unsigned poll_failures, poll_calls, uid_failures, toc_failures, reader_failures;
-    unsigned shards, reader_calls, chapters, fail_chapter,network_finishes;
+    unsigned shards, reader_calls, chapters, fail_chapter,network_finishes,link_waits;
     unsigned prefetch_starts,prefetch_stops,prefetch_count,prefetch_indices[3];
     int mode;
     bool bundle,notes_fail;
@@ -101,6 +101,7 @@ static void wait_ms(void* raw, unsigned ms) {
     ((mock_t*)raw)->now += ms;
 }
 static void finish_network(void* raw){++((mock_t*)raw)->network_finishes;}
+static void wait_link(void* raw,unsigned max_ms){CHECK(max_ms>=3000);++((mock_t*)raw)->link_waits;}
 static bool window_prefetch_start(void* raw,const char* toc,const char* id,const unsigned* indices,unsigned count) {
     mock_t* m=raw;CHECK(toc && strstr(toc,"toc.dat") && !strcmp(id,"1234567890") && count<=3);
     ++m->prefetch_starts;m->prefetch_count=count;
@@ -492,6 +493,18 @@ int main(int argc, char** argv) {
     CHECK(!thingsos_weidu_body("1", "1", "ok", 0, 9, request, sizeof(request)));
     mock_t m = { .poll_failures = 1, .uid_failures = 1 };
     snprintf(m.fixture, sizeof(m.fixture), "%s/valid.epub", argv[1]);
+    /* An AP disconnect mid-body is an mbedTLS socket error without
+       verification flags: replayable network loss, not a TLS failure. */
+    CHECK(thingsos_weidu_transport_error(76,0)==WD_NETWORK);   /* NET_RECV_FAILED (diag 0.2.2) */
+    CHECK(thingsos_weidu_transport_error(-0x4C,0)==WD_NETWORK);
+    CHECK(thingsos_weidu_transport_error(0x4E,0)==WD_NETWORK);  /* NET_SEND_FAILED */
+    CHECK(thingsos_weidu_transport_error(0x50,0)==WD_NETWORK);  /* NET_CONN_RESET */
+    CHECK(thingsos_weidu_transport_error(0x7280,0)==WD_NETWORK);/* SSL_CONN_EOF */
+    CHECK(thingsos_weidu_transport_error(0,0)==WD_NETWORK);
+    CHECK(thingsos_weidu_transport_error(76,8)==WD_TLS);        /* verification flags win */
+    CHECK(thingsos_weidu_transport_error(0x2700,0)==WD_TLS);    /* X509 verify failed */
+    CHECK(thingsos_weidu_transport_error(-0x7780,0)==WD_TLS);   /* fatal alert */
+    CHECK(strstr(thingsos_weidu_link_lost_text(),"WiFi 连接中断"));
     thingsos_weidu_client_t* c = calloc(1, sizeof(*c));
     CHECK(c);
     snprintf(c->root, sizeof(c->root), "%s/weidu-test", argv[1]);
@@ -588,8 +601,12 @@ int main(int argc, char** argv) {
     unsigned before_failed_bundle=m.note_requests;m.mode=6;
     CHECK(thingsos_wd_cache_bundle(c,&books[0],false,&notes_error)==WD_PROTOCOL && notes_error==WD_CANCEL && m.note_requests==before_failed_bundle);
     m.bundle=false;m.mode=4;
-    m.mode=12;CHECK(thingsos_weidu_download(c,&books[0])==WD_OK && m.toc_failures==3);
-    m.mode=13;CHECK(thingsos_weidu_download(c,&books[0])==WD_OK && m.reader_failures==3);
+    /* Each replay after a link loss first waits for Wi-Fi to come back. */
+    c->io.wait_link=wait_link;m.link_waits=0;
+    m.mode=12;CHECK(thingsos_weidu_download(c,&books[0])==WD_OK && m.toc_failures==3 && m.link_waits==2);
+    m.link_waits=0;
+    m.mode=13;CHECK(thingsos_weidu_download(c,&books[0])==WD_OK && m.reader_failures==3 && m.link_waits==2);
+    c->io.wait_link=NULL;
     /* An interrupted download keeps the chapters it already saved; the retry
        resumes from them instead of fetching the book from chapter one again. */
     /* Start from an empty chapter directory so the run really downloads. */

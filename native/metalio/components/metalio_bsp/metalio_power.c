@@ -13,11 +13,16 @@
  * cx25601n.cc} and periph/metalio_power.cc (MIT, Copyright (c) 2025 Shenzhen
  * Xinzhi Future Technology Co., Ltd.) as C on the ESP-IDF I2C master API. The
  * battery safety policy is unchanged.
+ *
+ * 电量显示计算见 battery_soc.inc（后台 1Hz 采样、3s 启动延迟、唤醒重新校准）。
+ * / Display SOC math lives in battery_soc.inc (1 Hz sampler, 3 s settle, wake
+ * recalibration).
  */
 #include "metalio_bsp.h"
 
 #include "esp_log.h"
 #include "esp_timer.h"
+#include <stdatomic.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -27,13 +32,9 @@
 /* ---- BQ27220 ---- */
 #define BQ_REG_VOLTAGE 0x08
 #define BQ_REG_CURRENT 0x0C
-#define BATTERY_EMPTY_MV 3300
-#define BATTERY_FULL_MV 4330
-#define FILTER_SIZE 60
-#define SOC_STEP_US (30LL * 1000 * 1000)
-#define FULL_HOLD_US (30LL * 1000 * 1000)
-#define FULL_CONFIRM_MV 4330
-#define FULL_EXIT_MV 4280
+// 开机/唤醒后等负载稳定再采样。/ Let boot or wake load settle before sampling.
+#define BATTERY_STARTUP_US (3LL * 1000 * 1000)
+#define BATTERY_TASK_MS 1000
 
 /* ---- CX25601N ---- */
 #define REG_ICHG_LO 0x02
@@ -75,14 +76,14 @@ static bool s_vreg_suspended;
 static uint32_t s_vreg_target_mv, s_vreg_now_mv;
 static bool s_uv_shutdown_done;
 
-static float s_filter[FILTER_SIZE];
-static int s_filter_idx;
-static float s_filter_sum;
-static bool s_filter_primed;
-static int s_displayed = -1;
-static int64_t s_last_step_us, s_full_since_us;
-static int s_last_dir;
-static bool s_charging;
+#include "battery_soc.inc"
+static battery_soc_t s_soc = {.displayed = -1};
+static SemaphoreHandle_t s_soc_lock;
+static TaskHandle_t s_soc_task;
+static int64_t s_soc_ready_at_us;
+static bool s_soc_paused;
+// 对外快照：-1 表示尚未就绪。/ Published snapshot; -1 means not ready.
+static _Atomic int s_battery = -1;
 
 /* ---- BQ27220 ---- */
 
@@ -122,70 +123,63 @@ static int32_t battery_ma(void) {
     return s_bq_ready && bq_read_u16(BQ_REG_CURRENT, &raw) ? (int16_t)raw : 0;
 }
 
-static float filter_push(float sample) {
-    if (!s_filter_primed) {
-        for (int i = 0; i < FILTER_SIZE; ++i) s_filter[i] = sample;
-        s_filter_sum = sample * FILTER_SIZE;
-        s_filter_idx = 0;
-        s_filter_primed = true;
-        return sample;
-    }
-    s_filter_sum -= s_filter[s_filter_idx];
-    s_filter[s_filter_idx] = sample;
-    s_filter_sum += sample;
-    s_filter_idx = (s_filter_idx + 1) % FILTER_SIZE;
-    return s_filter_sum / FILTER_SIZE;
-}
-
-static int mono_step(int target, bool charging) {
-    const int64_t now = esp_timer_get_time();
-    if (s_displayed < 0) {
-        s_displayed = target;
-        s_last_step_us = now;
-        return s_displayed;
-    }
-    if (now - s_last_step_us < SOC_STEP_US) return s_displayed;
-    if (charging ? target > s_displayed : target < s_displayed) {
-        s_displayed += charging ? 1 : -1;
-        s_last_step_us = now;
-    }
-    return s_displayed;
-}
-
-// 电压线性 SOC + 60 点滑动平均 + 每 30s 单向一档；满电需 ≥4.33V 持续 30s。
-// / Voltage-linear SOC, 60-sample moving average, one step per 30 s in one
-// direction; 100% needs ≥4.33 V held for 30 s.
-int metalio_battery_percent(void) {
+// 每秒一次在独立任务中采样，UI 只读快照，不在绘制路径等待 I2C。
+// / Sampled once per second in its own task; the UI reads only the snapshot.
+static int battery_sample(void) {
     static unsigned retry;
     if (!s_bq_ready && (retry++ % 10 != 0 || !bq_begin())) return -1;
-    uint16_t mv = 0;
-    if (!bq_read_u16(BQ_REG_VOLTAGE, &mv)) return s_displayed;
-    float raw = mv >= BATTERY_FULL_MV ? 100.0f
-              : mv <= BATTERY_EMPTY_MV
-                  ? 0.0f
-                  : (float)(mv - BATTERY_EMPTY_MV) * 100.0f / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
-    int target = (int)(filter_push(raw) + 0.5f);
-    if (target < 0) target = 0;
-    if (target > 100) target = 100;
-    const int64_t now = esp_timer_get_time();
-    bool full_ok = false;
-    if (mv >= FULL_CONFIRM_MV) {
-        if (s_full_since_us == 0) s_full_since_us = now;
-        full_ok = now - s_full_since_us >= FULL_HOLD_US;
-    } else {
-        s_full_since_us = 0;
+    uint16_t mv = 0, raw = 0;
+    if (!bq_read_u16(BQ_REG_VOLTAGE, &mv) || mv < 2500 || mv > 5000) return -1;
+    if (!bq_read_u16(BQ_REG_CURRENT, &raw)) return -1;
+    return battery_soc_update(&s_soc, mv, (int16_t)raw, esp_timer_get_time());
+}
+
+static void battery_task(void* arg) {
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_TASK_MS));
+        xSemaphoreTake(s_soc_lock, portMAX_DELAY);
+        int level = -1;
+        if (!s_soc_paused && esp_timer_get_time() >= s_soc_ready_at_us) {
+            level = battery_sample();
+            if (level < 0) s_soc.full_since_us = 0;
+        }
+        atomic_store(&s_battery, level);
+        xSemaphoreGive(s_soc_lock);
     }
-    if (target >= 100 && !full_ok) target = 99;
-    if (s_displayed >= 100 && mv >= FULL_EXIT_MV) target = 100;
-    int32_t ma = battery_ma();
-    bool charging = ma > 5, discharging = ma < -5;
-    int dir = charging ? 1 : discharging ? -1 : 0;
-    if (s_displayed >= 0 && dir != s_last_dir) s_last_step_us = now;
-    s_last_dir = dir;
-    int level = mono_step(target, charging);
-    if (full_ok && target >= 100 && s_displayed >= 99) level = s_displayed = 100;
-    s_charging = charging && level < 100;
-    return level;
+}
+
+int metalio_battery_percent(void) {
+    return atomic_load(&s_battery);
+}
+
+void metalio_battery_pause(void) {
+    if (s_soc_lock == NULL) return;
+    xSemaphoreTake(s_soc_lock, portMAX_DELAY);
+    s_soc_paused = true;
+    atomic_store(&s_battery, -1);
+    xSemaphoreGive(s_soc_lock);
+}
+
+// 唤醒后清除旧滤波与显示，3s 后按当前电压重新校准（可一次跨多档）。
+// / After wake, drop the stale filter and display and recalibrate after 3 s.
+void metalio_battery_restart(void) {
+    if (s_soc_lock == NULL) return;
+    xSemaphoreTake(s_soc_lock, portMAX_DELAY);
+    battery_soc_reset(&s_soc);
+    s_soc_ready_at_us = esp_timer_get_time() + BATTERY_STARTUP_US;
+    s_soc_paused = false;
+    atomic_store(&s_battery, -1);
+    xSemaphoreGive(s_soc_lock);
+}
+
+static esp_err_t battery_start(void) {
+    if (s_soc_task != NULL) return ESP_OK;
+    if (s_soc_lock == NULL) s_soc_lock = xSemaphoreCreateMutex();
+    if (s_soc_lock == NULL) return ESP_ERR_NO_MEM;
+    s_soc_ready_at_us = esp_timer_get_time() + BATTERY_STARTUP_US;
+    return xTaskCreate(battery_task, "battery", 3072, NULL, 4, &s_soc_task) == pdPASS ? ESP_OK
+                                                                                     : ESP_ERR_NO_MEM;
 }
 
 /* ---- CX25601N ---- */
@@ -337,6 +331,8 @@ static void cx_vreg_task(void* arg) {
 
 esp_err_t metalio_power_init(void) {
     bq_begin();
+    esp_err_t soc_err = battery_start();
+    if (soc_err != ESP_OK) ESP_LOGE(TAG, "battery sampler start failed: %s", esp_err_to_name(soc_err));
     if (metalio_i2c_probe(METALIO_ADDR_CX25601N) != ESP_OK) {
         ESP_LOGW(TAG, "CX25601N not found; charger left at hardware defaults");
         return s_bq_ready ? ESP_OK : ESP_ERR_NOT_FOUND;
@@ -376,10 +372,11 @@ metalio_charge_t metalio_charge_state(void) {
         last_error = err;
         return METALIO_CHARGE_UNKNOWN;
     }
-    metalio_charge_t state = charge_status_decode(raw, s_displayed);
+    const int battery = metalio_battery_percent();
+    metalio_charge_t state = charge_status_decode(raw, battery);
     if ((int)state != last_state || last_error != ESP_OK)
         ESP_LOGI(TAG, "charge status: REG1E=0x%02X CHG_STAT=%u VBUS_STAT=%u state=%u battery=%d%%",
-                 raw, (raw >> 3) & 3, raw & 7, (unsigned)state, s_displayed);
+                 raw, (raw >> 3) & 3, raw & 7, (unsigned)state, battery);
     last_state = state;
     last_error = ESP_OK;
     return state;

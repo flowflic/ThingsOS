@@ -127,8 +127,10 @@ static void app_controls_draw(void){
     if(app.audio.state==THINGSOS_AUDIO_RECORDING||app.audio.state==THINGSOS_AUDIO_RECORD_PAUSED)
         status_mic_draw(width/2-150);
     centered_label(app.wifi_enabled?(thingsos_network_connected()?"Wi-Fi 已连接":"Wi-Fi 未连接"):"Wi-Fi 已关闭",width/2-125,50,21,250);
-    snprintf(text,sizeof(text),"%u%%",app.battery);thingsos_font_size(ui_font(),23);thingsos_label_right(ui_font(),&app.canvas,text,width-210,50,116);
-    control_round(width-76,32,39,20,0,2,34,255);thingsos_rect(&app.canvas,width-72,36,(int)(31*app.battery/100),12,34);thingsos_rect(&app.canvas,width-36,38,3,8,34);
+    if(app.battery>=0){
+        snprintf(text,sizeof(text),"%d%%",app.battery);thingsos_font_size(ui_font(),23);thingsos_label_right(ui_font(),&app.canvas,text,width-210,50,116);
+        control_round(width-76,32,39,20,0,2,34,255);thingsos_rect(&app.canvas,width-72,36,(int)(31*app.battery/100),12,34);thingsos_rect(&app.canvas,width-36,38,3,8,34);
+    }
     label("控制中心",36,139,37,width-150);control_round(width-102,90,66,66,33,2,187,255);control_glyph(control_up,29,width-83,109,34);
     bool bt_connected=false,bt_on=bt_cc_state(&bt_connected);
     for(unsigned i=0;i<4;++i){

@@ -22,6 +22,10 @@ bool thingsos_ble_remember(thingsos_ble_status_t*,const thingsos_ble_device_t*);
 bool thingsos_ble_forget_record(thingsos_ble_status_t*,const thingsos_ble_device_t*);
 #ifndef THINGSOS_HOST_UI
 void thingsos_ble_init(void);
+/* Stop the BLE host/controller before light sleep (false: still starting, retry);
+   resume restarts the automatic reconnect it interrupted. */
+bool thingsos_ble_suspend(void);
+void thingsos_ble_resume(void);
 bool thingsos_ble_scan(bool start);
 void thingsos_ble_status(thingsos_ble_status_t*);
 bool thingsos_ble_connect(const thingsos_ble_device_t*);
@@ -30,4 +34,6 @@ bool thingsos_ble_forget(const thingsos_ble_device_t*);
 bool thingsos_ble_automatic(bool);
 bool thingsos_ble_pair_reply(bool accept,uint32_t passkey);
 bool thingsos_ble_input(thingsos_hid_key_t*);
+/* Lock-free summary for the memory sampler: 1 running, 2 connected, 4 HID ready. */
+unsigned thingsos_ble_flags(void);
 #endif

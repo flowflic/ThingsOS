@@ -343,6 +343,23 @@ int main(int argc, char** argv) {
         !thingsos_remote_directory("/sdcard/books/config ") &&
         !thingsos_remote_directory("/sdcard/.. /books"));
     CHECK(thingsos_managed_name("风景.PNG") && !thingsos_managed_name("config.json"));
+    /* Upload names: a sender's ellipsis is a plain character run, not a path. */
+    CHECK(thingsos_upload_name("image_蓝金色童话原创壁纸系列世界地标建..._0.jpg"));
+    CHECK(thingsos_upload_name("a..b.epub") && thingsos_upload_name("第1卷 上.txt"));
+    CHECK(!thingsos_upload_name("..") && !thingsos_upload_name(".hidden.jpg") && !thingsos_upload_name(" lead.jpg"));
+    CHECK(!thingsos_upload_name("trail.jpg.") && !thingsos_upload_name("trail.jpg "));
+    CHECK(!thingsos_upload_name("a/b.jpg") && !thingsos_upload_name("a\\b.jpg") && !thingsos_upload_name("c:d.jpg"));
+    CHECK(!thingsos_upload_name("q?.jpg") && !thingsos_upload_name("s*.jpg") && !thingsos_upload_name("p|.jpg") &&
+          !thingsos_upload_name("x<y>.jpg") && !thingsos_upload_name("say\"hi\".jpg"));
+    CHECK(!thingsos_upload_name("tab\t.jpg") && !thingsos_upload_name(""));
+    {
+        char longest[192];memset(longest,'a',186);memcpy(longest+186,".jpg",5);
+        CHECK(thingsos_upload_name(longest)); /* 190 bytes */
+        char over[193];memset(over,'a',187);memcpy(over+187,".jpg",5);
+        CHECK(!thingsos_upload_name(over));   /* 191 bytes */
+    }
+    /* An accepted upload name is still manageable as a file path. */
+    CHECK(thingsos_managed_path("/sdcard/wallpapers/image_蓝金色童话原创壁纸系列世界地标建..._0.jpg"));
     snprintf(p,sizeof(p),"%s/books/remote-image.png",root);managed_file=fopen(p,"wb");CHECK(managed_file);fputs("image",managed_file);fclose(managed_file);
     size_t image_record_count=r->book_count;
     CHECK(thingsos_book_manage(r,root,"/sdcard/books/remote-image.png","different.jpg")==THINGSOS_MANAGE_INVALID);

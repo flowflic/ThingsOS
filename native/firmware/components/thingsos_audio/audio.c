@@ -7,11 +7,16 @@
 #include "thingsos/audio_format.h"
 #include "record_denoise.h"
 #include "thingsos/bluetooth.h"
+#include "thingsos/memory_trace.h"
+#include "thingsos/heap_diag.h"
 #include "metalio_bsp.h"
 #include "network.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_intr_alloc.h"
+#include "esp_attr.h"
+#include "soc/interrupts.h"
 #include "soc/soc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -38,7 +43,22 @@ static void* thingsos_mp3_scratch;
 #define RECORD_BYTES (128u*1024)
 #define FRAME_SAMPLES 512u
 typedef enum {CMD_PLAY,CMD_RECORD,CMD_PAUSE,CMD_RESUME,CMD_STOP,CMD_SEEK,CMD_SUSPEND} command_kind_t;
-typedef struct {command_kind_t kind;uint32_t offset;char path[512];} command_t;
+typedef struct {command_kind_t kind;uint32_t offset;char path[512];
+    /* Resume of a parked playback: exact data offset (MP3), output sample
+       count and any pending seek target, restored instead of re-decoding. */
+    bool resume,resume_mp3;uint64_t resume_byte,resume_pcm,resume_seek;} command_t;
+/* A paused playback is parked: file closed, decoder/I2S/buffers freed, the
+   network claim released and the worker exited, so a long pause no longer
+   holds ~40 KiB of main SRAM or blocks WeRead/BLE. status keeps PLAY_PAUSED
+   with path and position; resume reopens the file at the saved point. */
+typedef struct {bool valid,mp3;uint64_t byte,pcm,seek;uint32_t position_ms;} parked_t;
+static parked_t parked;
+/* One-shot heap diagnosis of the first audio session of a boot: which
+   allocation survives the session and splits the largest main-SRAM block.
+   0 idle, 1 S0 (before play), 2 S1 (after I2S open), 3 closed, 4 reported. */
+static thingsos_heap_diag_snapshot_t *diag_s0, *diag_s1, *diag_s2;
+static atomic_int diag_state;
+static int64_t diag_closed_at;
 static QueueHandle_t commands;
 static SemaphoreHandle_t lifecycle;
 static TaskHandle_t task;
@@ -123,11 +143,68 @@ static bool io_take(unsigned timeout){return !thingsos_io_lock||xSemaphoreTake(t
 static void io_give(void){if(thingsos_io_lock)xSemaphoreGive(thingsos_io_lock);}
 static void pa(bool on){if(io_take(UINT_MAX)){metalio_pa(on&&!thingsos_bluetooth_connected());io_give();}}
 void thingsos_audio_status(thingsos_audio_status_t* out){if(!out)return;portENTER_CRITICAL(&guard);*out=status;portEXIT_CRITICAL(&guard);}
+static bool parked_valid(void){portENTER_CRITICAL(&guard);bool v=parked.valid;portEXIT_CRITICAL(&guard);return v;}
+static void parked_set(const parked_t* p){portENTER_CRITICAL(&guard);if(p)parked=*p;else parked.valid=false;portEXIT_CRITICAL(&guard);}
+static bool parked_take(parked_t* out){portENTER_CRITICAL(&guard);bool v=parked.valid;if(v){*out=parked;parked.valid=false;}portEXIT_CRITICAL(&guard);return v;}
+bool thingsos_audio_claimed(void){return atomic_load(&claimed);}
 bool thingsos_audio_active(void){thingsos_audio_status_t s;thingsos_audio_status(&s);return atomic_load(&claimed)||(s.state!=THINGSOS_AUDIO_IDLE&&s.state!=THINGSOS_AUDIO_ERROR);}
 void thingsos_audio_reserve(void){
     if(mp3_arena)return;
     mp3_arena=heap_caps_aligned_calloc(64,1,sizeof(*mp3_arena),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     ESP_LOGI(TAG,"MP3 arena %p bytes=%u",mp3_arena,(unsigned)sizeof(*mp3_arena));
+}
+/* Interrupt descriptors. esp_intr_alloc() creates one permanent 32-byte
+   vector_desc_t per (CPU, interrupt line) the first time that line is used,
+   in internal RAM, and never frees it. The I2S and GDMA interrupts of the
+   first playback/recording each needed one on the audio core (lines 7 and 9
+   measured, 2026-11-22). Created mid-session they landed wherever first-fit
+   put them, once in the middle of the largest main-SRAM block (40,948 B ->
+   20,468 B for the rest of the boot). The allocator always takes the lowest
+   free usable line, so briefly holding the lowest INTR_PREPARE_LINES lines on
+   the audio core at boot creates those descriptors while the heap is still
+   compact; later I2S/GDMA allocations reuse them and allocate nothing that
+   persists. Sources are peripherals ThingsOS never uses; the lines are
+   allocated disabled, so they are never routed live. */
+/* Audio task core; the task itself is created below. */
+#if CONFIG_FREERTOS_NUMBER_OF_CORES>1
+#define AUDIO_CORE 1
+#else
+#define AUDIO_CORE 0
+#endif
+#define INTR_PREPARE_LINES 6
+typedef struct {TaskHandle_t waiter;int lines[INTR_PREPARE_LINES];} intr_prepare_t;
+static void IRAM_ATTR intr_prepare_isr(void* unused){(void)unused;}
+static void intr_prepare_task(void* context){
+    intr_prepare_t* job=context;
+    static const int sources[INTR_PREPARE_LINES]={ETS_TWAI0_INTR_SOURCE,ETS_TWAI1_INTR_SOURCE,
+        ETS_PCNT0_INTR_SOURCE,ETS_PCNT1_INTR_SOURCE,ETS_CORDIC_INTR_SOURCE,ETS_ZERO_DET_INTR_SOURCE};
+    intr_handle_t handle[INTR_PREPARE_LINES]={0};
+    for(unsigned i=0;i<INTR_PREPARE_LINES;++i){
+        job->lines[i]=-1;
+        if(esp_intr_alloc(sources[i],ESP_INTR_FLAG_LOWMED|ESP_INTR_FLAG_INTRDISABLED,intr_prepare_isr,NULL,&handle[i])==ESP_OK)
+            job->lines[i]=esp_intr_get_intno(handle[i]);
+    }
+    for(unsigned i=0;i<INTR_PREPARE_LINES;++i)if(handle[i])esp_intr_free(handle[i]);
+    xTaskNotifyGive(job->waiter);
+    vTaskDelete(NULL);
+}
+void thingsos_audio_prepare_interrupts(void){
+    static bool done;
+    if(done)return;
+    done=true;
+    intr_prepare_t job={.waiter=xTaskGetCurrentTaskHandle()};
+    for(unsigned i=0;i<INTR_PREPARE_LINES;++i)job.lines[i]=-1;
+    size_t before=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);
+    /* Interrupts belong to the CPU that allocates them: run on the audio core. */
+    if(xTaskCreatePinnedToCore(intr_prepare_task,"audio_intr",3072,&job,configMAX_PRIORITIES-2,NULL,AUDIO_CORE)!=pdPASS){
+        ESP_LOGW(TAG,"Interrupt descriptor preparation skipped: no task memory");
+        return;
+    }
+    ulTaskNotifyTake(pdTRUE,portMAX_DELAY); /* job lives on this stack */
+    vTaskDelay(1); /* let the idle task reclaim the helper's stack */
+    ESP_LOGI(TAG,"Prepared interrupt descriptors core=%d lines=%d,%d,%d,%d,%d,%d main_free %u -> %u",
+        AUDIO_CORE,job.lines[0],job.lines[1],job.lines[2],job.lines[3],job.lines[4],job.lines[5],
+        (unsigned)before,(unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA));
 }
 void thingsos_audio_volume(unsigned percent){portENTER_CRITICAL(&guard);volume=percent>100?100:percent;status.volume=volume;portEXIT_CRITICAL(&guard);}
 static void publish(thingsos_audio_state_t state,const char* message,int error){
@@ -180,6 +257,7 @@ static bool finish(void){
     input_count=input_used=0;recording=paused=false;
     atomic_store(&output_suspended,false);
     if(claimed){thingsos_network_external_end();claimed=false;}
+    {int expect=2;if(atomic_compare_exchange_strong(&diag_state,&expect,3))diag_closed_at=esp_timer_get_time();}
     return ok;
 }
 static bool refill(bool blocking){
@@ -230,8 +308,17 @@ static bool buffers(bool record){
 }
 static bool start(const command_t* command){
     if(!finish()){publish(THINGSOS_AUDIO_ERROR,"音频文件保存失败，请检查 SD 卡",EIO);return false;}
+    if(!command->resume)parked_set(NULL);
     publish(THINGSOS_AUDIO_STARTING,"准备音频…",0);
-    if(!thingsos_network_external_begin()){publish(THINGSOS_AUDIO_ERROR,"传输处理中，请稍后使用音频",EBUSY);return false;}
+    if(!thingsos_network_external_begin()){
+        if(command->resume){
+            /* WeRead/transfer took the claim while parked: stay paused. */
+            parked_t p={.valid=true,.mp3=command->resume_mp3,.byte=command->resume_byte,.pcm=command->resume_pcm,
+                        .seek=command->resume_seek,.position_ms=command->offset};
+            parked_set(&p);publish(THINGSOS_AUDIO_PLAY_PAUSED,"传输或微读进行中，完成后再继续播放",EBUSY);return false;
+        }
+        publish(THINGSOS_AUDIO_ERROR,"传输处理中，请稍后使用音频",EBUSY);return false;
+    }
     claimed=true;recording=command->kind==CMD_RECORD;written=0;pcm_samples=0;seek_sample=0;stalls=0;eof=false;input_used=input_count=0;
     if(!thingsos_bluetooth_audio_ready(recording)){publish(THINGSOS_AUDIO_ERROR,recording?"蓝牙音频占用中，请断开耳机或结束搜索后再录音":"音频输出尚未就绪，请稍后重试",EBUSY);finish();return false;}
     wireless_playback=!recording&&thingsos_bluetooth_connected();
@@ -263,6 +350,11 @@ static bool start(const command_t* command){
                 valid=valid&&size>skip&&fseek(file,skip,SEEK_SET)==0;
                 unread=source_size=valid?(uint64_t)(size-skip):0;mp3dec_init(decoder);source_rate=0;source_channels=0;
                 seek_sample=(uint64_t)command->offset*16;
+                if(valid&&command->resume&&command->resume_mp3){
+                    valid=command->resume_byte<source_size&&fseek(file,skip+(long)command->resume_byte,SEEK_SET)==0;
+                    unread=source_size-command->resume_byte;pcm_samples=command->resume_pcm;
+                    seek_sample=command->resume_seek>pcm_samples?command->resume_seek:0;
+                }
             }else{
                 thingsos_wav_t wave={0};valid=ext&&!strcasecmp(ext,".wav")&&thingsos_wav_read(file,&wave);
                 if(valid){source_rate=wave.rate;source_channels=wave.channels;source_size=wave.bytes;
@@ -282,6 +374,7 @@ static bool start(const command_t* command){
     if(!recording&&!refill(true)){publish(THINGSOS_AUDIO_ERROR,"读取音频失败",EIO);finish();return false;}
     pa(false);esp_err_t error=metalio_audio_open(recording);
     if(error!=ESP_OK){publish(THINGSOS_AUDIO_ERROR,"音频硬件启动失败",error);finish();return false;}hardware=true;
+    {int expect=1;if(diag_s1&&atomic_compare_exchange_strong(&diag_state,&expect,2))thingsos_heap_diag_take(diag_s1);}
     if(!recording){pa(true);vTaskDelay(pdMS_TO_TICKS(10));}
     stats_disarm();
     publish(recording?THINGSOS_AUDIO_RECORDING:THINGSOS_AUDIO_PLAYING,"",0);
@@ -364,11 +457,6 @@ static bool play_step(void){
    memory is main SRAM only, so try that first. Playback uses ~3.5 KiB of
    stack (16384 - 12.9 KiB free at start); 10 KiB keeps a wide margin and fits
    fragmented SRAM. Recording keeps 16 KiB. */
-#if CONFIG_FREERTOS_NUMBER_OF_CORES>1
-#define AUDIO_CORE 1
-#else
-#define AUDIO_CORE 0
-#endif
 #define PLAY_STACK 10240u
 #define RECORD_STACK 16384u
 static void worker(void* unused);
@@ -394,6 +482,16 @@ static bool audio_task_create(bool record){
     else ESP_LOGW(TAG,"Audio task stack=%u at %p %s main_free=%u main_largest=%u",(unsigned)size,(void*)at,region,(unsigned)main_free,(unsigned)main_largest);
     return true;
 }
+static void park(void){
+    parked_t p={.valid=true,.mp3=is_mp3,.pcm=pcm_samples,.seek=seek_sample};
+    if(is_mp3)p.byte=thingsos_audio_resume_byte(source_size,unread,input_count-input_used);
+    portENTER_CRITICAL(&guard);p.position_ms=status.position_ms;portEXIT_CRITICAL(&guard);
+    if(!finish()){publish(THINGSOS_AUDIO_ERROR,"音频文件关闭失败，请检查 SD 卡",EIO);return;}
+    parked_set(&p);
+    ESP_LOGI(TAG,"Playback parked: position=%u ms byte=%llu; file, buffers, I2S and network claim released",
+        (unsigned)p.position_ms,(unsigned long long)p.byte);
+    thingsos_memory_trace("audio-parked",0,(int)p.position_ms);
+}
 static void worker(void* unused){
     (void)unused;command_t command;
     for(;;){
@@ -416,7 +514,17 @@ static void worker(void* unused){
                 xSemaphoreGive(lifecycle);vTaskDeleteWithCaps(NULL);return;
             }
             if(command.kind==CMD_PLAY||command.kind==CMD_RECORD){start(&command);continue;}
-            if(command.kind==CMD_STOP){bool ok=finish();publish(ok?THINGSOS_AUDIO_IDLE:THINGSOS_AUDIO_ERROR,ok?"":"音频保存失败，请检查 SD 卡",ok?0:EIO);continue;}
+            if(!file&&(command.kind==CMD_RESUME||command.kind==CMD_SEEK)){
+                parked_t p;
+                if(parked_take(&p)){
+                    thingsos_audio_status_t s;thingsos_audio_status(&s);
+                    command_t resume={.kind=CMD_PLAY,.offset=command.kind==CMD_SEEK?command.offset:p.position_ms};
+                    strlcpy(resume.path,s.path,sizeof(resume.path));
+                    if(command.kind==CMD_RESUME){resume.resume=true;resume.resume_mp3=p.mp3;resume.resume_byte=p.byte;resume.resume_pcm=p.pcm;resume.resume_seek=p.seek;}
+                    start(&resume);continue;
+                }
+            }
+            if(command.kind==CMD_STOP){parked_set(NULL);bool ok=finish();publish(ok?THINGSOS_AUDIO_IDLE:THINGSOS_AUDIO_ERROR,ok?"":"音频保存失败，请检查 SD 卡",ok?0:EIO);continue;}
             if(command.kind==CMD_SUSPEND&&file&&!recording){paused=true;if(hardware){metalio_audio_close();hardware=false;}pa(false);atomic_store(&output_suspended,true);publish(THINGSOS_AUDIO_PLAY_PAUSED,"播放已暂停",0);continue;}
             if(command.kind==CMD_SEEK&&file&&!recording){thingsos_audio_status_t s;thingsos_audio_status(&s);command.kind=CMD_PLAY;strlcpy(command.path,s.path,sizeof(command.path));start(&command);continue;}
             if(file&&(command.kind==CMD_PAUSE||command.kind==CMD_RESUME)){
@@ -445,6 +553,9 @@ static void worker(void* unused){
         }
         if(file){
             if(!recording&&!paused&&wireless_playback&&!thingsos_bluetooth_connected()){paused=true;pa(false);publish(THINGSOS_AUDIO_PLAY_PAUSED,"蓝牙连接断开，播放已暂停",0);}
+            /* Playback pause (user, Bluetooth loss or pre-sleep suspend) parks the
+               session; a recording pause keeps its WAV file open. */
+            if(paused&&!recording){park();continue;}
             if(paused){vTaskDelay(pdMS_TO_TICKS(10));ran_blocked();continue;}
             bool ok=recording?record_step():play_step();
             fair_yield();
@@ -455,8 +566,11 @@ static void worker(void* unused){
     }
 }
 static bool submit(command_kind_t kind,const char* path,uint32_t offset){
-    if(!commands){commands=xQueueCreate(1,sizeof(command_t));if(!commands)return false;}
-    if(!lifecycle){lifecycle=xSemaphoreCreateMutex();if(!lifecycle)return false;}
+    /* Created on the first play and kept for the boot. In internal RAM these
+       ~0.8 KiB split the largest main-SRAM block (63.5 -> 38.9 KiB measured
+       2026-11-22). Neither is used from an ISR or a flash-write window. */
+    if(!commands){commands=xQueueCreateWithCaps(1,sizeof(command_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!commands)return false;}
+    if(!lifecycle){lifecycle=xSemaphoreCreateMutexWithCaps(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!lifecycle)return false;}
     command_t command={.kind=kind,.offset=offset};if(path){if(strlen(path)>=sizeof(command.path))return false;strlcpy(command.path,path,sizeof(command.path));}
     if(kind==CMD_PLAY||kind==CMD_RECORD){if(thingsos_network_busy()&&!thingsos_audio_active())return false;publish(THINGSOS_AUDIO_STARTING,"准备音频…",0);}
     if(kind==CMD_STOP)publish(THINGSOS_AUDIO_STOPPING,"正在结束音频…",0);
@@ -476,12 +590,44 @@ static bool submit(command_kind_t kind,const char* path,uint32_t offset){
     }
     xSemaphoreGive(lifecycle);return ok;
 }
-bool thingsos_audio_play(const char* path,uint32_t offset){return path&&thingsos_bluetooth_audio_ready(false)&&submit(CMD_PLAY,path,offset);}
+bool thingsos_audio_play(const char* path,uint32_t offset){
+    if(path&&atomic_load(&diag_state)==0) {
+        diag_s0=heap_caps_calloc(1,sizeof(*diag_s0),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        diag_s1=heap_caps_calloc(1,sizeof(*diag_s1),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        diag_s2=heap_caps_calloc(1,sizeof(*diag_s2),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+        if(diag_s0&&diag_s1&&diag_s2){thingsos_heap_diag_take(diag_s0);atomic_store(&diag_state,1);}
+        else{free(diag_s0);free(diag_s1);free(diag_s2);diag_s0=diag_s1=diag_s2=NULL;atomic_store(&diag_state,4);}
+    }
+    return path&&thingsos_bluetooth_audio_ready(false)&&submit(CMD_PLAY,path,offset);
+}
+/* Main task, every ~2 s: report once the first session closed and its worker
+   (and 10 KiB stack) had time to be deleted. */
+void thingsos_audio_heap_diag_poll(void){
+    if(atomic_load(&diag_state)!=3||esp_timer_get_time()-diag_closed_at<2000000)return;
+    if(task)return; /* worker still alive: its stack would show as "new" */
+    thingsos_heap_diag_take(diag_s2);
+    thingsos_heap_diag_report("audio-first-session",diag_s0,diag_s1,diag_s2);
+    free(diag_s0);free(diag_s1);free(diag_s2);diag_s0=diag_s1=diag_s2=NULL;
+    atomic_store(&diag_state,4);
+}
 bool thingsos_audio_record(void){return thingsos_bluetooth_audio_ready(true)&&submit(CMD_RECORD,NULL,0);}
-bool thingsos_audio_pause(bool paused){thingsos_audio_status_t s;thingsos_audio_status(&s);bool mic=s.state==THINGSOS_AUDIO_RECORDING||s.state==THINGSOS_AUDIO_RECORD_PAUSED;return commands&&(paused||thingsos_bluetooth_audio_ready(mic))&&submit(paused?CMD_PAUSE:CMD_RESUME,NULL,0);}
-bool thingsos_audio_stop(void){if(!commands)return true;return submit(CMD_STOP,NULL,0);}
+bool thingsos_audio_pause(bool paused){thingsos_audio_status_t s;thingsos_audio_status(&s);bool mic=s.state==THINGSOS_AUDIO_RECORDING||s.state==THINGSOS_AUDIO_RECORD_PAUSED;
+    if(paused&&parked_valid())return true; /* already parked */
+    return commands&&(paused||thingsos_bluetooth_audio_ready(mic))&&submit(paused?CMD_PAUSE:CMD_RESUME,NULL,0);}
+bool thingsos_audio_stop(void){
+    /* A parked session has no worker or open file: end it without a task. */
+    if(lifecycle){
+        xSemaphoreTake(lifecycle,portMAX_DELAY);
+        bool idle=!task&&parked_valid();
+        if(idle){parked_set(NULL);publish(THINGSOS_AUDIO_IDLE,"",0);}
+        xSemaphoreGive(lifecycle);
+        if(idle)return true;
+    }
+    if(!commands)return true;
+    return submit(CMD_STOP,NULL,0);
+}
 bool thingsos_audio_seek(uint32_t offset){return commands&&submit(CMD_SEEK,NULL,offset);}
-bool thingsos_audio_route_idle(void){return !thingsos_audio_active()||atomic_load(&output_suspended);}
+bool thingsos_audio_route_idle(void){return !thingsos_audio_active()||atomic_load(&output_suspended)||parked_valid();}
 bool thingsos_audio_suspend_locked(void){
     if(thingsos_audio_route_idle())return true;
     thingsos_audio_status_t s;thingsos_audio_status(&s);

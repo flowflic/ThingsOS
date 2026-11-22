@@ -176,7 +176,15 @@ static void punctuation_wrap_test(thingsos_font_t* font,thingsos_canvas_t* canva
             thingsos_chapter_t ch={0};ch.text=text;ch.bytes=strlen(text);
             for(unsigned epub=0;epub<2;++epub) {
                 size_t end=thingsos_text_page_layout(font,NULL,&ch,0,36,90,width,(int)font->size,145,0,epub!=0,NULL,NULL,NULL);
-                CHECK(end==9); /* Move the last character together with its punctuation. */
+                /* clreq: a single point mark (，。、) drops the empty half of its box and
+                   may hang up to min(margin-8, half its advance) into the 36 px margin, so
+                   it stays with the fourth character when that covers its advance. Every
+                   other ending moves down together with the last character. */
+                bool point=!strcmp(endings[i],"，")||!strcmp(endings[i],"。")||!strcmp(endings[i],"、");
+                int mark=point?thingsos_glyph(font,NULL,endings[i][2]==(char)0x8c?0xff0c:endings[i][2]==(char)0x82?0x3002:0x3001,0,0):0;
+                int hang=36-8<mark/2?36-8:mark/2;
+                bool stays=point && mark*4>=(int)font->size*3 && mark/2+hang>=mark;
+                CHECK(end==(stays?15u:9u));
                 memset(canvas->pixels,255,684u*1216u);
                 CHECK(thingsos_text_page_layout(font,canvas,&ch,0,36,90,width,(int)font->size,145,0,epub!=0,NULL,NULL,NULL)==end);
                 CHECK(thingsos_text_page_layout(font,NULL,&ch,end,36,90,width,(int)font->size,145,0,epub!=0,NULL,NULL,NULL)>12);

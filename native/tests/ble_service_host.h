@@ -101,6 +101,11 @@ static size_t host_ble_dma_free=96u*1024u,host_ble_dma_largest=48u*1024u;
 static unsigned host_ble_port_inits,host_ble_port_deinits;static bool host_ble_host_task_fail;
 static size_t heap_caps_get_free_size(unsigned caps){return (caps&MALLOC_CAP_DMA)?host_ble_dma_free:host_ble_dma_free+30u*1024u;}
 static size_t heap_caps_get_largest_free_block(unsigned caps){(void)caps;return host_ble_dma_largest;}
+/* Init-peak window: report the current free size as the local minimum. */
+static unsigned host_ble_peak_windows;
+static int heap_caps_monitor_local_minimum_free_size_start(void){++host_ble_peak_windows;return ESP_OK;}
+static int heap_caps_monitor_local_minimum_free_size_stop(void){return ESP_OK;}
+static size_t heap_caps_get_minimum_free_size(unsigned caps){return heap_caps_get_free_size(caps);}
 static TaskHandle_t xTaskGetCurrentTaskHandle(void){return (void*)2;}
 static TaskHandle_t xSemaphoreGetMutexHolder(SemaphoreHandle_t s){(void)s;return host_ble_io_held?(void*)2:NULL;}
 static int xSemaphoreTake(SemaphoreHandle_t s,unsigned ticks){(void)s;(void)ticks;if(!host_ble_io)return 0;host_ble_io_held=true;return pdTRUE;}
@@ -124,6 +129,18 @@ static void ble_store_config_init(void){ble_hs_cfg.store_read_cb=host_store_read
 static int ble_store_util_delete_peer(const ble_addr_t* addr){(void)addr;union ble_store_key key={0};return ble_hs_cfg.store_delete_cb(0,&key);}
 static int nimble_port_init(void){++host_ble_port_inits;return 0;}
 static int nimble_port_deinit(void){++host_ble_port_deinits;return 0;}
+#define ESP_BT_MODE_BLE 1
+#ifndef BLE_HS_EUNKNOWN
+#define BLE_HS_EUNKNOWN 17
+#endif
+static unsigned host_ble_enables,host_ble_disables,host_ble_host_inits,host_ble_host_deinits;
+static int esp_bt_controller_enable(int mode){(void)mode;++host_ble_enables;return 0;}
+static int esp_bt_controller_disable(void){++host_ble_disables;return 0;}
+static int esp_nimble_init(void){++host_ble_host_inits;return 0;}
+static int esp_nimble_deinit(void){++host_ble_host_deinits;return 0;}
+static unsigned host_ble_port_stops;
+static int nimble_port_stop(void){++host_ble_port_stops;return 0;}
+static void vTaskDelay(unsigned ticks){(void)ticks;}
 static void nimble_port_run(void){}
 static void nimble_port_freertos_deinit(void){}
 static void nimble_port_freertos_init(void(*fn)(void*)){(void)fn;}

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "weidu_device.h"
 #include "thingsos/diagnostics.h"
+#include "thingsos/memory_trace.h"
 #include <stdatomic.h>
 #include <errno.h>
 #include "lwip/dns.h"
@@ -74,6 +75,10 @@ typedef struct {
     uint64_t queued_generation, queue_retry_at;
     char queued_owner[33];
     thingsos_wd_read_session_t queued_session;
+    /* Worker-only scratch (one worker at a time): keeps a session copy and
+       path buffers off the 12 KiB internal worker stack. */
+    thingsos_weidu_session_t logout_previous;
+    char worker_path[640];
 } weidu_work_t;
 static weidu_work_t* work;
 static thingsos_weidu_action_t requested_action;
@@ -162,6 +167,24 @@ static void wait_ms(void* context, unsigned ms) {
     if(owned)xSemaphoreGive(thingsos_io_lock);
     uint64_t until=now_ms(NULL)+ms;
     while(!abort_requested && now_ms(NULL)<until)vTaskDelay(1);
+    if(owned)xSemaphoreTake(thingsos_io_lock,portMAX_DELAY);
+}
+/* Wait for the station to regain an IP before an idempotent replay. */
+static bool link_wait(unsigned max_ms, atomic_bool* stop) {
+    uint64_t until=now_ms(NULL)+max_ms;
+    while(!thingsos_network_connected()) {
+        if(abort_requested || (stop && atomic_load(stop)) || now_ms(NULL)>=until)return false;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return true;
+}
+static void wait_link(void* context, unsigned max_ms) {
+    (void)context;
+    if(thingsos_network_connected())return;
+    bool owned=thingsos_io_lock && xSemaphoreGetMutexHolder(thingsos_io_lock)==xTaskGetCurrentTaskHandle();
+    if(owned)xSemaphoreGive(thingsos_io_lock);
+    bool back=link_wait(max_ms,NULL);
+    ESP_LOGI("ThingsOS_weidu","Retry link wait restored=%d",back);
     if(owned)xSemaphoreTake(thingsos_io_lock,portMAX_DELAY);
 }
 static bool cookie_replace_locked(const char* key, const char* value) {
@@ -310,10 +333,16 @@ static unsigned diagnostic_endpoint(const char* path) {
     if(strstr(path,"/api/agent/"))return 9;
     return 0;
 }
-static thingsos_weidu_error_t fetch_impl(
+/* Per-request scratch kept in PSRAM, off the 12 KiB worker stack (and the
+   prefetch stacks): one per call because prefetch workers fetch concurrently. */
+typedef struct { char url[640]; thingsos_weidu_ps_t ps, pc, token; } fetch_scratch_t;
+static thingsos_weidu_error_t fetch_impl_with(
+    fetch_scratch_t* scratch,
     void* context, const char* method, const char* path, const char* body, const char* referer,
     const char* destination, size_t limit, thingsos_weidu_session_t* s, char* memory, size_t* bytes,
     bool extract_reader,const char* authorization) {
+    char* url = scratch->url;
+    thingsos_weidu_ps_t *ps = &scratch->ps, *pc = &scratch->pc, *token = &scratch->token;
     unsigned diagnostic_id=atomic_fetch_add(&diagnostic_request_sequence,1)+1;
     unsigned diagnostic_stage=diagnostic_endpoint(path);
     wifi_ap_record_t diagnostic_ap={0};
@@ -331,13 +360,12 @@ static thingsos_weidu_error_t fetch_impl(
     if (s && (!cookie_replace("wr_fp",work->fingerprint) || !cookie_replace("wr_vid", s->vid) ||
               !cookie_replace("wr_skey", s->skey) || !cookie_replace("wr_rt", s->rt)))
         return WD_PROTOCOL;
-    char url[640];
     bool personal_marks=!strcmp(path,"/api/agent/gateway");
     if(personal_marks && !authorization)return WD_ACCESS;
     /* Only the explicit official notes gateway uses the API key. Web cookies
        stay on their Web origin; gateway response cookies are ignored. */
-    int n = snprintf(url, sizeof(url), "%s%s",personal_marks?"https://i.weread.qq.com":"https://weread.qq.com",path);
-    if (n < 0 || (size_t)n >= sizeof(url)) return WD_LIMIT;
+    int n = snprintf(url, sizeof(scratch->url), "%s%s",personal_marks?"https://i.weread.qq.com":"https://weread.qq.com",path);
+    if (n < 0 || (size_t)n >= sizeof(scratch->url)) return WD_LIMIT;
     bool serialized_reading=reading_action_is(requested_action);
     bool cache_async=requested_action==WD_DEVICE_DOWNLOAD || requested_action==WD_DEVICE_CHAPTER || requested_action==WD_DEVICE_RESTORE;
     if(cache_async) {
@@ -417,9 +445,8 @@ static thingsos_weidu_error_t fetch_impl(
     int status = 0;
     int tls_error = 0, tls_flags = 0;
     esp_err_t transport_error = ESP_OK;
-    thingsos_weidu_ps_t ps = { 0 },pc={0},token={0};
     bool ps_reported = false;
-    transfer.ps=&ps;transfer.pc=&pc;transfer.token=&token;
+    transfer.ps=ps;transfer.pc=pc;transfer.token=token;
     if(extract_reader && reading_context_active)work->reader_pc[0]=work->reader_token[0]=0;
     if (connection) {
         esp_http_client_set_method(
@@ -512,20 +539,20 @@ static thingsos_weidu_error_t fetch_impl(
                 bool ok = true;
                 if (extract_reader) {
                     if(reading_context_active){
-                        if(pc.state!=4 && !thingsos_weidu_field_feed(&pc,"\"pclts\"",block,(size_t)got)){pc.state=4;pc.value[0]=0;}
-                        if(token.state!=4 && !thingsos_weidu_field_feed(&token,"\"token\"",block,(size_t)got)){transfer.error=WD_PROTOCOL;break;}
-                        if(pc.state==4)strlcpy(work->reader_pc,pc.value,sizeof(work->reader_pc));
-                        if(token.state==4)strlcpy(work->reader_token,token.value,sizeof(work->reader_token));
+                        if(pc->state!=4 && !thingsos_weidu_field_feed(pc,"\"pclts\"",block,(size_t)got)){pc->state=4;pc->value[0]=0;}
+                        if(token->state!=4 && !thingsos_weidu_field_feed(token,"\"token\"",block,(size_t)got)){transfer.error=WD_PROTOCOL;break;}
+                        if(pc->state==4)strlcpy(work->reader_pc,pc->value,sizeof(work->reader_pc));
+                        if(token->state==4)strlcpy(work->reader_token,token->value,sizeof(work->reader_token));
                     }
-                    if (ps.state!=4 && !thingsos_weidu_ps_feed(&ps, block, (size_t)got)) {
+                    if (ps->state!=4 && !thingsos_weidu_ps_feed(ps, block, (size_t)got)) {
                         transfer.error = WD_PROTOCOL;
                         break;
                     }
-                    if (ps.state == 4) {
-                        strcpy(memory, ps.value);
+                    if (ps->state == 4) {
+                        strcpy(memory, ps->value);
                         if (!ps_reported && !reading_context_active) {
                             ESP_LOGI("ThingsOS_weidu","Reader token offset=%u block_end=%u",
-                                     (unsigned)ps.offset,
+                                     (unsigned)ps->offset,
                                      (unsigned)(transfer.bytes + (size_t)got));
                             ps_reported = true;
                         }
@@ -619,12 +646,27 @@ static thingsos_weidu_error_t fetch_impl(
         if (destination) remove(destination);
         if (transport_error == ESP_ERR_ESP_TLS_CANNOT_RESOLVE_HOSTNAME) return WD_DNS;
         if (tls_error == -MBEDTLS_ERR_SSL_ALLOC_FAILED || tls_error == MBEDTLS_ERR_SSL_ALLOC_FAILED) return WD_MEMORY;
-        return tls_error || tls_flags ? WD_TLS : WD_NETWORK;
+        /* A Wi-Fi drop surfaces as an mbedTLS socket error (NET_RECV_FAILED)
+           with no verification flags; that is a replayable link loss. */
+        return thingsos_weidu_transport_error(tls_error,tls_flags);
     }
     if (status == 401) return personal_marks ? WD_ACCESS : WD_AUTH;
     if (status == 403) return WD_ACCESS;
-    if (extract_reader && ps.state != 4) return WD_ACCESS;
+    if (extract_reader && ps->state != 4) return WD_ACCESS;
     return status == 200 ? WD_OK : WD_NETWORK;
+}
+static thingsos_weidu_error_t fetch_impl(
+    void* context, const char* method, const char* path, const char* body, const char* referer,
+    const char* destination, size_t limit, thingsos_weidu_session_t* s, char* memory, size_t* bytes,
+    bool extract_reader,const char* authorization) {
+    fetch_scratch_t* scratch = heap_caps_calloc(1, sizeof(*scratch), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!scratch) return WD_MEMORY;
+    thingsos_weidu_error_t e = fetch_impl_with(scratch, context, method, path, body, referer, destination,
+                                               limit, s, memory, bytes, extract_reader, authorization);
+    /* Token values can hold reader credentials: wipe before freeing. */
+    memset(scratch, 0, sizeof(*scratch));
+    free(scratch);
+    return e;
 }
 static thingsos_weidu_error_t fetch(
     void* context,const char* method,const char* path,const char* body,const char* referer,
@@ -872,6 +914,7 @@ static void prefetch_worker(void* argument) {
                 if ((e != WD_NETWORK && e != WD_DNS) || attempt == 2) break;
                 uint64_t until=now_ms(NULL)+500u*(attempt+1);
                 while(!atomic_load(&p->stop) && !abort_requested && now_ms(NULL)<until)vTaskDelay(1);
+                link_wait(6000,&p->stop);
             }
             if (e == WD_OK && !thingsos_weidu_token(ps, sizeof(ps))) e = WD_ACCESS;
         }
@@ -1013,7 +1056,7 @@ bool thingsos_weidu_device_init(void) {
     client->io =
         (thingsos_weidu_io_t){ NULL,         http,    session, cancelled, now_ms, unix_time,
                                random_value, wait_ms, publish, auth,      reader, image, finish_network, reading_exchange, reading_context,
-                               0, prefetch_start, prefetch_get, prefetch_stop };
+                               0, prefetch_start, prefetch_get, prefetch_stop, wait_link };
     nvs_handle_t fp_handle;uint32_t fingerprint=0;
     if(nvs_open("thingsos-weidu",NVS_READWRITE,&fp_handle)==ESP_OK){
         if(nvs_get_u32(fp_handle,"fingerprint",&fingerprint)!=ESP_OK || !fingerprint){
@@ -1102,11 +1145,19 @@ static bool device_queued_conflict(thingsos_weidu_client_t* c,const thingsos_wd_
 #include "eink_readtime.inc"
 static void worker(void* unused) {
     (void)unused;
+    /* result: stack region (1 main SRAM, 2 slow LP RAM, 3 PSRAM). */
+    { int here=0; thingsos_memory_trace("weidu-worker",(int)requested_action,thingsos_memory_region(&here)); }
+    /* Peak main-SRAM draw of this job (local-minimum window; false if another
+       window, e.g. BLE init, is open). */
+    const uint32_t peak_caps=MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT;
+    size_t peak_before=heap_caps_get_free_size(peak_caps);
+    bool peak_window=heap_caps_monitor_local_minimum_free_size_start()==ESP_OK;
     xSemaphoreTake(thingsos_io_lock, portMAX_DELAY);
     uint64_t operation_started = now_ms(NULL);
     bool network_exchange = radio_needs_awake(requested_action,
         requested_action == WD_DEVICE_RESTORE && thingsos_network_connected());
     weidu_radio_t radio = {0};
+    unsigned link_losses_at_start = thingsos_network_link_losses();
     if (network_exchange) radio = radio_awake();
     mkdir("/sdcard/.thingsos", 0775);
     mkdir(client->root, 0775);
@@ -1125,24 +1176,25 @@ static void worker(void* unused) {
         xSemaphoreTake(thingsos_io_lock,portMAX_DELAY);
     } else if (requested_action == WD_DEVICE_LOGOUT) {
         memset(&work->read_session,0,sizeof(work->read_session));
-        thingsos_weidu_session_t previous = client->session;
+        work->logout_previous = client->session;
         memset(&client->session, 0, sizeof(client->session));
         memset(work->runtime_cookie, 0, sizeof(work->runtime_cookie));
         memset(work->mp_ticket,0,sizeof(work->mp_ticket));memset(work->mp_wrpa,0,sizeof(work->mp_wrpa));
         if (!session(NULL, &client->session, true)) {
-            client->session = previous;
+            client->session = work->logout_previous;
+            memset(&work->logout_previous,0,sizeof(work->logout_previous));
             e = WD_STORAGE;
         } else {
             nvs_handle_t rt_handle;
             if(nvs_open("thingsos-eink",NVS_READWRITE,&rt_handle)==ESP_OK){nvs_erase_key(rt_handle,"credentials");nvs_commit(rt_handle);nvs_close(rt_handle);}
             rt_loaded=false;memset(&rt_public,0,sizeof(rt_public));
-            char shelf[600];
-            snprintf(shelf, sizeof(shelf), "%s/shelf.dat", client->root);
-            remove(shelf);
+            snprintf(work->worker_path, sizeof(work->worker_path), "%s/shelf.dat", client->root);
+            remove(work->worker_path);
             client->status.count = 0;
             memset(&reading,0,sizeof(reading));reading.pull=reading.progress=reading.duration=reading.notes=WD_CANCEL;
             work->pending_valid=false;thingsos_wd_pending_clear(client->root);
             client->status.qr[0] = client->status.path[0] = 0;
+            memset(&work->logout_previous,0,sizeof(work->logout_previous));
         }
     } else if(requested_action==WD_DEVICE_SEARCH) {
         e=online_search(client,work->search_query);
@@ -1343,6 +1395,11 @@ static void worker(void* unused) {
         if(sync_failed && e != WD_CANCEL) strlcpy(
             client->status.message, "登录已成功，书架同步未完成，请点同步重试",
             sizeof(client->status.message));
+        /* The station dropped during this job and replays did not recover:
+           name the real cause instead of a generic timeout or TLS failure. */
+        else if((e==WD_NETWORK || e==WD_DNS) && thingsos_network_link_losses()!=link_losses_at_start)
+            strlcpy(client->status.message, thingsos_weidu_link_lost_text(),
+                    sizeof(client->status.message));
     } else if (requested_action == WD_DEVICE_LOGOUT) {
         client->status.phase = WD_IDLE;
         strcpy(client->status.message, "已退出登录，离线图书保留在书库");
@@ -1353,8 +1410,8 @@ static void worker(void* unused) {
     if(requested_action==WD_DEVICE_COVERS){
         bool changed=false;
         for(size_t i=0;i<cover_count;++i) {
-            char file[640];snprintf(file,sizeof(file),"%s/covers/%.96s.jpg",client->root,work->cover_books[i].id);
-            struct stat st;if(!stat(file,&st) && st.st_size>0)changed=true;
+            snprintf(work->worker_path,sizeof(work->worker_path),"%s/covers/%.96s.jpg",client->root,work->cover_books[i].id);
+            struct stat st;if(!stat(work->worker_path,&st) && st.st_size>0)changed=true;
         }
         if(changed)++cover_serial;
         client->status.phase=WD_READY;client->status.message[0]=0;
@@ -1371,6 +1428,15 @@ static void worker(void* unused) {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              requested_action, WEIDU_WORKER_STACK);
+    if(peak_window) {
+        size_t low=heap_caps_get_minimum_free_size(peak_caps);
+        heap_caps_monitor_local_minimum_free_size_stop();
+        ESP_LOGI("ThingsOS_weidu","Job peak action=%d main_before=%u main_low=%u peak_use=%u",
+                 requested_action,(unsigned)peak_before,(unsigned)low,(unsigned)(peak_before>low?peak_before-low:0));
+        thingsos_memory_trace("weidu-peak",(int)requested_action,(int)(peak_before>low?peak_before-low:0));
+    }
+    thingsos_memory_trace("weidu-finished",(int)requested_action,(int)e);
+    thingsos_memory_trace("weidu-stack",(int)requested_action,(int)uxTaskGetStackHighWaterMark(NULL));
     ESP_LOGI("ThingsOS_weidu","DMA free=%u largest=%u PSRAM free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL),
@@ -1410,9 +1476,11 @@ static thingsos_weidu_start_result_t start_job(thingsos_weidu_action_t action, c
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM),heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM))){
         client->status.background=reading_action_is(action);
         client->status.phase=WD_ERROR;strlcpy(client->status.message,thingsos_weidu_error_text(WD_MEMORY),sizeof(client->status.message));
+        thingsos_memory_trace("weidu-refused",(int)action,WD_MEMORY);
         ++client->status.serial;publish(NULL,&client->status);return WD_START_MEMORY;
     }
     if (!thingsos_network_external_begin()) return WD_START_BUSY;
+    thingsos_memory_trace("weidu-request",(int)action,0);
     abort_requested = false;
     atomic_store(&cancel_requested_at,0);
     if(action==WD_DEVICE_SYNC)memset(work->cover_attempts,0,sizeof(work->cover_attempts));
@@ -1433,6 +1501,7 @@ static thingsos_weidu_start_result_t start_job(thingsos_weidu_action_t action, c
     ++client->status.serial;
     publish(NULL, &client->status);
     if (xTaskCreate(worker, "weidu", WEIDU_WORKER_STACK, NULL, 2, NULL) != pdPASS) {
+        thingsos_memory_trace("weidu-start-failed",(int)action,WD_MEMORY);
         ESP_LOGW("ThingsOS_weidu", "Worker start failed action=%d internal=%u largest=%u", action,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -1641,7 +1710,12 @@ void thingsos_wd_device_poll(bool idle) {
     strlcpy(work->queued_owner,work->reading.owner,sizeof(work->queued_owner));
     if(thingsos_wd_device_request(WD_DEVICE_UPLOAD,in.id,&in)) {
         if(chosen<8)work->deferred[chosen].valid=false;
-    } else work->queued_generation=0;
+    } else {
+        /* Start refused (e.g. an audio session holds the network claim). Back
+           off: retrying every UI pass re-read the SD queue ~25 times/s. */
+        work->queued_generation=0;
+        work->queue_retry_at=now_ms(NULL)+5000;
+    }
 }
 bool thingsos_wd_device_sync_load(const char* id,const char* owner,thingsos_wd_sync_t* out) {
     if(!out)return false;
